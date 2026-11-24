@@ -1,0 +1,8 @@
+{
+  "serverUrl": "http://localhost:3000",
+  "appToken": "",
+  "chunkSeconds": 15,
+  "analyzeEverySeconds": 120,
+  "micAlerts": true,
+  "openAtLogin": true
+}

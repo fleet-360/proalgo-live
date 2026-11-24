@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:" />
+    <title>Pro Algorithm Live</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="head">
+      <img src="../assets/icon.png" alt="" class="logo" />
+      <div class="head-text">
+        <div class="app-name">Pro Algorithm Live</div>
+        <div class="status" id="status">מוכן</div>
+      </div>
+      <button class="icon-btn" id="btn-settings" title="הגדרות" aria-label="הגדרות">⚙</button>
+    </header>
+
+    <!-- idle: start a call -->
+    <section class="view" id="view-idle">
+      <div class="banner hidden" id="mic-banner">המיקרופון פעיל. נראה שאתה בשיחה.</div>
+      <h2>שיחה חדשה</h2>
+      <label class="field">
+        <span>שם הלקוח (לא חובה)</span>
+        <input id="client-name" type="text" placeholder="לדוגמה: הובלות כהן" autocomplete="off" />
+      </label>
+      <button class="primary big" id="btn-start">התחל להקשיב לשיחה</button>
+      <p class="hint">
+        המערכת מקליטה את המיקרופון שלך ואת הסאונד של המחשב, כלומר את הלקוח ב-Zoom/Meet/Teams. עדיף לעבוד עם אוזניות. כדאי לעדכן את הלקוח שהשיחה מתומללת.
+      </p>
+      <div class="error hidden" id="idle-error"></div>
+    </section>
+
+    <!-- live call -->
+    <section class="view hidden" id="view-live">
+      <div class="linkbox">
+        <div class="linkbox-label">הקישור לתוכנית (הועתק ללוח)</div>
+        <div class="linkbox-url" id="public-url"></div>
+        <div class="row">
+          <button id="btn-copy">העתק קישור</button>
+          <button id="btn-open">פתח בדפדפן</button>
+        </div>
+      </div>
+
+      <div class="meters">
+        <div class="meter"><span>אני</span><div class="bar"><i id="lvl-sales"></i></div></div>
+        <div class="meter"><span>לקוח</span><div class="bar"><i id="lvl-client"></i></div></div>
+      </div>
+      <div class="warn hidden" id="loopback-warn">לא הצלחתי לקלוט את סאונד המחשב. רק הצד שלך מוקלט.</div>
+
+      <div class="row tight">
+        <div class="timer" id="timer">00:00</div>
+        <div class="next" id="next-update"></div>
+        <button id="btn-update">עדכן עכשיו</button>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">הערה ל-AI <span class="muted">(למשל: "הלקוח רוצה להתחיל מההצעות מחיר")</span></div>
+        <div class="row">
+          <input id="note" type="text" placeholder="תיקון או מיקוד לתוכנית…" autocomplete="off" />
+          <button id="btn-note">שלח</button>
+        </div>
+      </div>
+
+      <div class="panel" id="insights">
+        <div class="panel-title">רק בשבילך <span class="muted" id="confidence"></span></div>
+        <div class="ins-group"><h3>שאלות לשאול עכשיו</h3><ul id="ins-questions"><li class="muted">יופיע אחרי העדכון הראשון</li></ul></div>
+        <div class="ins-group"><h3>איפה ה-ROI</h3><ul id="ins-roi"></ul></div>
+        <div class="ins-group"><h3>סיכונים ודברים לא לפתח</h3><ul id="ins-risks"></ul></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">תמלול</div>
+        <div class="transcript" id="transcript"></div>
+      </div>
+
+      <div class="error hidden" id="live-error"></div>
+      <button class="danger big" id="btn-end">סיים שיחה</button>
+    </section>
+
+    <!-- ended -->
+    <section class="view hidden" id="view-ended">
+      <h2>השיחה הסתיימה</h2>
+      <p id="ended-msg">מכין את הגרסה הסופית של התוכנית…</p>
+      <div class="linkbox">
+        <div class="linkbox-url" id="ended-url"></div>
+        <div class="row">
+          <button id="btn-copy2">העתק קישור</button>
+          <button id="btn-open2">פתח בדפדפן</button>
+        </div>
+      </div>
+      <button class="primary big" id="btn-new">שיחה חדשה</button>
+    </section>
+
+    <!-- settings -->
+    <section class="view hidden" id="view-settings">
+      <h2>הגדרות</h2>
+      <label class="field"><span>כתובת השרת</span><input id="cfg-server" type="url" placeholder="https://your-app.vercel.app" dir="ltr" /></label>
+      <label class="field"><span>קוד גישה (APP_TOKEN)</span><input id="cfg-token" type="password" dir="ltr" /></label>
+      <label class="field"><span>עדכון התוכנית כל (שניות)</span><input id="cfg-every" type="number" min="30" max="900" step="10" /></label>
+      <label class="check"><input id="cfg-mic" type="checkbox" /> להציע הפעלה כשהמיקרופון נדלק</label>
+      <label class="check"><input id="cfg-login" type="checkbox" /> לעלות עם Windows</label>
+      <div class="row">
+        <button class="primary" id="btn-save">שמור</button>
+        <button id="btn-cancel">ביטול</button>
+      </div>
+      <div class="muted small" id="version"></div>
+    </section>
+
+    <script src="app.js"></script>
+  </body>
+</html>
