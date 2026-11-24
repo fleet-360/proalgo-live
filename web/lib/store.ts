@@ -96,9 +96,24 @@ class MemoryStore implements Store {
   }
 }
 
+/** Upstash env names depend on the prefix chosen in Vercel (KV_, STORAGE_, ...), so fall back to a suffix match. */
+function findRedisEnv(): { url?: string; token?: string } {
+  const env = process.env;
+  let url = env.KV_REST_API_URL || env.UPSTASH_REDIS_REST_URL;
+  let token = env.KV_REST_API_TOKEN || env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) {
+    const urlKey = Object.keys(env).find((k) => k.endsWith("_REST_API_URL"));
+    if (urlKey) {
+      const prefix = urlKey.slice(0, -"_REST_API_URL".length);
+      url = env[urlKey];
+      token = env[`${prefix}_REST_API_TOKEN`];
+    }
+  }
+  return { url, token };
+}
+
 function makeStore(): Store {
-  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+  const { url, token } = findRedisEnv();
   if (url && token) return new RedisStore(new Redis({ url, token }));
   if (process.env.VERCEL) {
     console.warn("No Redis configured on Vercel: sessions will be lost between requests. Add Upstash for Redis.");
