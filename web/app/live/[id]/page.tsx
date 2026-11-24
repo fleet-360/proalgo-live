@@ -22,7 +22,7 @@ export default async function LivePage({ params }: { params: Promise<{ id: strin
     <LiveView
       id={id}
       initial={{
-        status: effectiveStatus(meta),
+        status: effectiveStatus(meta, meta.status === "live" && (await store.isFinalRequested(id))),
         clientName: meta.clientName,
         plan: meta.plan,
         version: meta.version,

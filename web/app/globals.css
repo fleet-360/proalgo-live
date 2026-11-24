@@ -324,6 +324,6 @@ body {
     box-shadow: none;
     break-after: page;
   }
-  .slide { transform: none !important; }
+  .slide { transform: none !important; visibility: visible !important; }
   .skel { animation: none; }
 }

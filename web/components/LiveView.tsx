@@ -23,15 +23,27 @@ export function LiveView({ id, initial }: { id: string; initial: LiveState }) {
   useEffect(() => {
     if (state.status === "ended" || missing) return;
     let stopped = false;
+    let inFlight = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     // One request at a time; the next tick starts only after this one settles, so answers can't arrive out of order.
     const tick = async () => {
       if (stopped) return;
+      timer = undefined;
+      inFlight = true;
+      try {
+        await poll();
+      } finally {
+        inFlight = false;
+      }
+      if (!stopped && stateRef.current.status !== "ended") timer = setTimeout(tick, POLL_MS);
+    };
+    const poll = async () => {
       if (!document.hidden) {
         try {
           const res = await fetch(`/api/live/${id}`, { cache: "no-store", signal: AbortSignal.timeout(8000) });
           if (res.status === 404) {
+            stopped = true;
             setMissing(true);
             return;
           }
@@ -43,17 +55,16 @@ export function LiveView({ id, initial }: { id: string; initial: LiveState }) {
               if (cur.version > 0 && JSON.stringify(next.plan) !== JSON.stringify(cur.plan)) setToast((n) => n + 1);
               stateRef.current = next;
               setState(next);
-              if (next.status === "ended") return;
             }
           }
         } catch {
           // offline for a moment; try again on the next tick
         }
       }
-      timer = setTimeout(tick, POLL_MS);
     };
+    // Back to the tab: fetch now instead of waiting, unless a request is already on its way.
     const onVisible = () => {
-      if (!document.hidden && timer) {
+      if (!document.hidden && timer && !inFlight) {
         clearTimeout(timer);
         tick();
       }

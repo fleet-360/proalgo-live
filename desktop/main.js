@@ -26,6 +26,8 @@ let win = null;
 let tray = null;
 let quitting = false;
 let recording = false;
+let busy = false; // finishing a call: uploads draining and the final version being built
+let quitRequested = false;
 let sleepBlocker = null;
 
 // ---------- config ----------
@@ -194,27 +196,32 @@ function buildTrayMenu() {
 
 /** Quitting mid-call would lose the last minutes and the final version, so finish the call first. */
 async function requestQuit() {
-  if (!recording || !win) {
+  if ((!recording && !busy) || !win) {
     quitting = true;
     return app.quit();
   }
+  if (quitRequested) return showWindow(); // already finishing; don't stack dialogs
+  quitRequested = true;
   showWindow();
   const { response } = await dialog.showMessageBox(win, {
     type: "question",
-    buttons: ["סיים את השיחה וצא", "ביטול"],
+    buttons: [recording ? "סיים את השיחה וצא" : "צא כשהגרסה הסופית מוכנה", "ביטול"],
     defaultId: 0,
     cancelId: 1,
     title: "Pro Algorithm Live",
-    message: "שיחה מוקלטת כרגע.",
+    message: recording ? "שיחה מוקלטת כרגע." : "הגרסה הסופית של התוכנית עדיין נבנית.",
     detail: "לפני היציאה האפליקציה תסיים את השיחה ותכין את הגרסה הסופית של התוכנית.",
   });
-  if (response !== 0) return;
+  if (response !== 0) {
+    quitRequested = false;
+    return;
+  }
   win.webContents.send("end-and-quit");
-  // Hard cap in case the final version hangs.
+  // Hard cap in case the final version hangs (worst case: 90s uploads + 5 min waiting + final pass).
   setTimeout(() => {
     quitting = true;
     app.quit();
-  }, 6 * 60 * 1000).unref();
+  }, 12 * 60 * 1000).unref();
 }
 
 function createTray() {
@@ -315,6 +322,9 @@ function setupIpc() {
       tray.setToolTip(recording ? "Pro Algorithm Live – מקליט" : "Pro Algorithm Live");
       tray.setContextMenu(buildTrayMenu());
     }
+  });
+  ipcMain.handle("busy:set", (_e, value) => {
+    busy = !!value;
   });
   ipcMain.handle("app:version", () => app.getVersion());
   ipcMain.handle("app:quit", () => {

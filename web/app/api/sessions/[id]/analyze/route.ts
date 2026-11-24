@@ -42,12 +42,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const lock = await store.tryLock(id, maxDuration + 5);
   if (!lock) {
-    if (final) {
-      // The running update will close the session when it finishes; the app keeps retrying for a full final pass.
-      const fresh = (await store.getMeta(id)) ?? meta;
-      fresh.finalRequested = true;
-      await store.saveMeta(fresh);
-    }
+    // The app keeps retrying for a full final pass; the flag only matters if it never comes back (app closed).
+    if (final) await store.setFinalRequested(id);
     return Response.json({ busy: true, version: meta.version }, { status: 409 });
   }
   try {
@@ -66,8 +62,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     fresh.analyzedNotes = notes.length;
     fresh.lastError = null;
     fresh.updatedAt = Date.now();
-    if (final || fresh.finalRequested) fresh.status = "ended";
-    if (final) fresh.finalRequested = false;
+    if (final) fresh.status = "ended";
     await store.saveMeta(fresh);
     return Response.json({ version: fresh.version, plan: fresh.plan, insights: fresh.insights, changed, final });
   } catch (e) {
@@ -75,7 +70,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     console.error("analyze failed", message);
     const fresh = (await store.getMeta(id)) ?? meta;
     fresh.lastError = message;
-    if (final || fresh.finalRequested) fresh.status = "ended";
+    if (final) fresh.status = "ended";
     await store.saveMeta(fresh);
     return Response.json({ error: message }, { status: 502 });
   } finally {

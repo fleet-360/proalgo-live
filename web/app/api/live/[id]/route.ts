@@ -10,7 +10,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   if (!meta) return Response.json({ error: "not found" }, { status: 404 });
   return Response.json(
     {
-      status: effectiveStatus(meta),
+      status: effectiveStatus(meta, meta.status === "live" && (await store.isFinalRequested(id))),
       clientName: meta.clientName,
       plan: meta.plan,
       version: meta.version,

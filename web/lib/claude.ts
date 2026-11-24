@@ -197,6 +197,11 @@ export async function analyze(input: {
     result = await call(tail);
   }
 
+
+  // Keep a stage the model left empty as it was in the previous version: the deck must not "jump" or blank out.
+  const prev = input.previous;
+  if (prev && !stagesComplete(result.plan)) result.plan = fillFrom(result.plan, prev);
+
   // Early in a call the model sometimes writes the first page and leaves the rest of the deck empty.
   // A half-empty deck looks broken to the client, so a focused second call builds just the missing part.
   if (hasBusinessContent(result.plan) && !stagesComplete(result.plan) && remaining() > 90_000) {
@@ -220,9 +225,13 @@ export async function analyze(input: {
                   type: "text",
                   text: [
                     "</transcript>",
-                    `<plan_so_far>\n${JSON.stringify({ currentProcess: result.plan.currentProcess, solution: result.plan.solution })}\n</plan_so_far>`,
-                    "העמוד הראשון של המצגת כבר כתוב (plan_so_far). המשימה שלך עכשיו: לבנות את שאר המצגת שמממשת את הפתרון הזה – 5 שלבי עבודה מלאים (שלב 1 תשתית וחיבור, שלבים 2-4 הליבה מהערך הגבוה לנמוך, שלב 5 בדיקות הטמעה והדרכה), שמות 3 החלקים, מה נדרש מהלקוח, שורת היקף ונקודת בקרה. כשחסר מידע, כתוב השערה מקצועית סבירה. בנוסף: 2-3 שאלות שכדאי לאיש המכירות לשאול עכשיו ונקודת ROI אחת.",
-                  ].join("\n\n"),
+                    input.clientName ? `<client_name>${input.clientName}</client_name>` : "",
+                    notes ? `<salesperson_notes>\n${notes}\n</salesperson_notes>` : "",
+                    `<plan_so_far>\n${JSON.stringify(result.plan)}\n</plan_so_far>`,
+                    "חלק מהמצגת כבר כתוב (plan_so_far), אבל חלק מהשלבים ריקים. המשימה שלך: להחזיר את כל המצגת שאחרי העמוד הראשון – 5 שלבי עבודה מלאים (שלב 1 תשתית וחיבור, שלבים 2-4 הליבה מהערך הגבוה לנמוך, שלב 5 בדיקות הטמעה והדרכה), שמות 3 החלקים, מה נדרש מהלקוח, שורת היקף ונקודת בקרה. שלב שכבר מלא ב-plan_so_far – העתק אותו מילה במילה. כשחסר מידע, כתוב השערה מקצועית סבירה, ופעל לפי הערות איש המכירות. בנוסף: 2-3 שאלות שכדאי לאיש המכירות לשאול עכשיו ונקודת ROI אחת.",
+                  ]
+                    .filter(Boolean)
+                    .join("\n\n"),
                 },
               ],
             },
@@ -233,8 +242,8 @@ export async function analyze(input: {
       console.log(`analyze: completion out=${response.usage.output_tokens} stop=${response.stop_reason}`);
       const c = response.parsed_output;
       if (c) {
-        const merged = normalizePlan({ ...result.plan, ...c, stages: c.stages, parts: c.parts });
-        const { plan } = sanitizePlan(merged, input.previous);
+        const extra = sanitizePlan(normalizePlan({ ...result.plan, ...c, stages: c.stages, parts: c.parts }), input.previous).plan;
+        const plan = fillFrom(result.plan, extra);
         if (stagesComplete(plan)) {
           result = {
             plan,
@@ -250,21 +259,25 @@ export async function analyze(input: {
       console.warn("analyze: completion failed:", e instanceof Error ? e.message : e);
     }
   }
-  // Last resort: carry over stages from the previous version rather than blanking them in front of the client.
-  const prev = input.previous;
-  if (prev && !stagesComplete(result.plan) && stagesComplete(prev)) {
-    result.plan = {
-      ...result.plan,
-      parts: result.plan.parts.map((p, i) => p || prev.parts[i]),
-      stages: result.plan.stages.map((s, i) => (s.title ? s : prev.stages[i])),
-      requirements: result.plan.requirements.bullets.length ? result.plan.requirements : prev.requirements,
-      scopeSubtitle: result.plan.scopeSubtitle || prev.scopeSubtitle,
-      checkpoint: result.plan.checkpoint || prev.checkpoint,
-    };
-  }
   return result;
 }
 
+function stageComplete(s: Plan["stages"][number] | undefined): boolean {
+  return !!s && !!s.title.trim() && s.bullets.length > 0;
+}
+
 function stagesComplete(p: Plan): boolean {
-  return p.stages.length === 5 && p.stages.every((s) => s.title.trim() && s.bullets.length > 0);
+  return p.stages.length === 5 && p.stages.every(stageComplete);
+}
+
+/** Fill only the empty parts of `plan` (incomplete stages, empty parts, requirements, scope) from `src`. */
+function fillFrom(plan: Plan, src: Plan): Plan {
+  return {
+    ...plan,
+    parts: plan.parts.map((p, i) => p || src.parts[i] || ""),
+    stages: plan.stages.map((s, i) => (stageComplete(s) ? s : stageComplete(src.stages[i]) ? src.stages[i] : s)),
+    requirements: plan.requirements.bullets.length ? plan.requirements : src.requirements,
+    scopeSubtitle: plan.scopeSubtitle || src.scopeSubtitle,
+    checkpoint: plan.checkpoint || src.checkpoint,
+  };
 }

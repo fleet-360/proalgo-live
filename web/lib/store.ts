@@ -20,6 +20,9 @@ interface Store {
   tryLock(id: string, ttlSec: number): Promise<string | null>;
   /** Releases the lock only if it is still ours (a run that outlived its TTL must not free a newer run's lock). */
   unlock(id: string, token: string): Promise<void>;
+  /** "End call" arrived while an update held the lock (kept apart from meta so it can't clobber a concurrent save). */
+  setFinalRequested(id: string): Promise<void>;
+  isFinalRequested(id: string): Promise<boolean>;
 }
 
 const TTL_SEC = 60 * 60 * 24 * 120; // keep sessions ~4 months
@@ -29,6 +32,7 @@ const k = {
   segs: (id: string) => `live:${id}:segs`,
   notes: (id: string) => `live:${id}:notes`,
   lock: (id: string) => `live:${id}:lock`,
+  final: (id: string) => `live:${id}:final`,
 };
 
 class RedisStore implements Store {
@@ -67,6 +71,12 @@ class RedisStore implements Store {
       [token],
     );
   }
+  async setFinalRequested(id: string) {
+    await this.r.set(k.final(id), 1, { ex: 60 * 60 });
+  }
+  async isFinalRequested(id: string) {
+    return (await this.r.exists(k.final(id))) === 1;
+  }
 }
 
 class MemoryStore implements Store {
@@ -74,6 +84,7 @@ class MemoryStore implements Store {
   private segs = new Map<string, Segment[]>();
   private notes = new Map<string, Note[]>();
   private locks = new Map<string, { until: number; token: string }>();
+  private finals = new Set<string>();
   async getMeta(id: string) {
     const m = this.metas.get(id);
     return m ? structuredClone(m) : null;
@@ -102,6 +113,12 @@ class MemoryStore implements Store {
   }
   async unlock(id: string, token: string) {
     if (this.locks.get(id)?.token === token) this.locks.delete(id);
+  }
+  async setFinalRequested(id: string) {
+    this.finals.add(id);
+  }
+  async isFinalRequested(id: string) {
+    return this.finals.has(id);
   }
 }
 

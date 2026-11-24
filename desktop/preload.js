@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld("live", {
   openExternal: (url) => ipcRenderer.invoke("open-external", url),
   copy: (text) => ipcRenderer.invoke("clipboard:write", text),
   setRecording: (value) => ipcRenderer.invoke("recording:set", value),
+  setBusy: (value) => ipcRenderer.invoke("busy:set", value),
   version: () => ipcRenderer.invoke("app:version"),
   selfTestDone: (report) => ipcRenderer.invoke("selftest:done", report),
   onPromptStart: (fn) => ipcRenderer.on("prompt-start", (_e, data) => fn(data)),

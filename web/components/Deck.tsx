@@ -92,7 +92,7 @@ function Box({
   useIsoLayoutEffect(() => {
     const fit = () => {
       const el = ref.current;
-      if (!el) return;
+      if (!el || !el.getClientRects().length) return; // hidden: nothing to measure yet
       let s = size;
       el.style.fontSize = `${s}px`;
       while (s > min && (el.scrollHeight > h + 1 || el.scrollWidth > w + 1)) {
@@ -107,9 +107,13 @@ function Box({
     let alive = true;
     fonts?.ready.then(() => alive && fit());
     fonts?.addEventListener?.("loadingdone", fit);
+    // A box measured while hidden (phone layout, narrow window) has no size; measure again once it shows.
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => fit()) : null;
+    if (ro && ref.current) ro.observe(ref.current);
     return () => {
       alive = false;
       fonts?.removeEventListener?.("loadingdone", fit);
+      ro?.disconnect();
     };
   }, [watch, size, min, w, h]);
   return (

@@ -417,11 +417,19 @@ async function sendNote() {
   }
 }
 
-async function endSession() {
+/** Ends the current call. Returns a promise that settles when the final version is done (also on repeat calls). */
+function endSession() {
   const s = sess;
-  if (!s || s.ended) return;
+  if (!s) return Promise.resolve();
+  if (s.ended) return s.endPromise || Promise.resolve();
   s.ended = true;
+  s.endPromise = finishCall(s);
+  return s.endPromise;
+}
+
+async function finishCall(s) {
   s.finalizing = true;
+  live.setBusy(true);
   clearInterval(s.ticker);
   $("btn-end").disabled = true;
   s.recorders.forEach((r) => r.stop());
@@ -444,6 +452,7 @@ async function endSession() {
   await finalizeSession(s);
 
   s.finalizing = false;
+  live.setBusy(false);
   setStatus("מוכן");
   $("btn-end").disabled = false;
   $("btn-new").disabled = false;
@@ -454,6 +463,7 @@ async function endSession() {
 async function finalizeSession(s) {
   const msg = $("ended-msg");
   const deadline = Date.now() + 5 * 60 * 1000;
+  let errors = 0;
   for (;;) {
     let res;
     try {
@@ -472,7 +482,14 @@ async function finalizeSession(s) {
       return;
     }
     if (res.error) {
-      msg.textContent = `הגרסה הסופית לא נוצרה (${res.error}). הקישור מציג את הגרסה האחרונה.`;
+      // A temporary server or network problem: try a few more times before asking the salesperson.
+      if (errors++ < 3 && Date.now() < deadline && !/קוד הגישה|לא נמצאה/.test(res.error)) {
+        msg.textContent = "תקלה זמנית, מנסה שוב ליצור את הגרסה הסופית…";
+        await sleep(10000);
+        continue;
+      }
+      const reason = res.error.replace(/[,.]?\s*(מנסה שוב|בודק שוב בעוד רגע)\.?/, "");
+      msg.textContent = `הגרסה הסופית לא נוצרה (${reason}). הקישור מציג את הגרסה האחרונה.`;
       $("btn-retry-final").classList.remove("hidden");
       return;
     }
@@ -486,16 +503,20 @@ async function finalizeSession(s) {
   }
 }
 
-async function retryFinal() {
+function retryFinal() {
   const s = sess;
   if (!s || s.finalizing) return;
-  s.finalizing = true;
-  $("btn-retry-final").classList.add("hidden");
-  $("btn-new").disabled = true;
-  $("ended-msg").textContent = "מנסה שוב ליצור את הגרסה הסופית…";
-  await finalizeSession(s);
-  s.finalizing = false;
-  $("btn-new").disabled = false;
+  s.endPromise = (async () => {
+    s.finalizing = true;
+    live.setBusy(true);
+    $("btn-retry-final").classList.add("hidden");
+    $("btn-new").disabled = true;
+    $("ended-msg").textContent = "מנסה שוב ליצור את הגרסה הסופית…";
+    await finalizeSession(s);
+    s.finalizing = false;
+    live.setBusy(false);
+    $("btn-new").disabled = false;
+  })();
 }
 
 function cleanupStreams(s) {
@@ -598,6 +619,13 @@ $("btn-cancel").addEventListener("click", () => show(currentView));
 
 // Clicking the "looks like you're on a call" notification starts listening right away.
 live.onPromptStart(({ autoStart } = {}) => {
+  // Still on the previous call's end screen: a new call can start once its final version is done.
+  if (autoStart && currentView === "ended" && !(sess && sess.finalizing)) {
+    sess = null;
+    $("client-name").value = "";
+    showError("idle-error", null);
+    show("idle");
+  }
   if (currentView !== "idle") return;
   if (autoStart) return startSession();
   $("mic-banner").classList.remove("hidden");
@@ -613,7 +641,7 @@ live.onCallMaybeEnded(() => {
 // Tray "exit" during a call: finish properly first.
 live.onEndAndQuit(async () => {
   try {
-    if (sess && !sess.ended) await endSession();
+    if (sess) await endSession(); // also waits for a call that is already finishing
   } finally {
     live.quit();
   }

@@ -89,13 +89,14 @@ export interface SessionMeta {
   analyzedSegments: number; // how many segments the current plan is based on
   analyzedNotes: number;
   lastError: string | null;
-  finalRequested?: boolean; // "end call" arrived while another update held the lock
 }
 
 /** A session nobody ended (app crashed, laptop closed) stops claiming to be live after a few quiet hours. */
 const STALE_MS = 3 * 60 * 60 * 1000;
-export function effectiveStatus(meta: SessionMeta, now = Date.now()): "live" | "ended" {
+export function effectiveStatus(meta: SessionMeta, finalRequested = false, now = Date.now()): "live" | "ended" {
   if (meta.status === "ended") return "ended";
+  // "End call" was pressed but the final pass never completed (e.g. the app was closed): stop claiming live soon.
+  if (finalRequested && now - meta.updatedAt > 6 * 60 * 1000) return "ended";
   return now - meta.updatedAt > STALE_MS ? "ended" : "live";
 }
 
@@ -144,29 +145,28 @@ export function normalizePlan(p: Plan): Plan {
  * currentProcess is exempt (it may quote the client's own numbers, e.g. "שעה לכל הצעה").
  * Returns the cleaned plan and what was removed (for logging).
  */
+// Our prices / development cost: blocked everywhere on the client's deck.
+// Only amounts with a currency, never the bare letters "שקל" (they appear inside "משקל", "שקלול").
 // Note: JS \b does not work next to Hebrew letters, so the patterns avoid it.
-const MONEY_OR_TIME =
-  /₪|\$|ש"ח|ש״ח|שקל|עלות (הפיתוח|הפרויקט|המערכת)|תקציב|בנק שעות|שעות (פיתוח|עבודה)|\d+\s*(ימי עבודה|שבועות)|תוך (שבוע|שבועיים|חודש|חודשיים)/;
-const PRICE_QUOTE = /הצע(ת|ות) מחיר/g; // the client's own process ("הצעות מחיר") is fine
-
-function hasMoneyOrTime(s: string): boolean {
-  return MONEY_OR_TIME.test(s.replace(PRICE_QUOTE, ""));
-}
+const OUR_COST =
+  /₪|\$|ש"ח|ש״ח|\d[\d,.]*\s*(אלף\s*)?שקל(ים)?(?![א-ת])|בנק שעות|שעות פיתוח|עלות (הפיתוח|הפרויקט|המערכת)|תקציב (הפרויקט|הפיתוח)|\d+\s*ימי עבודה/;
+// Our delivery timeline: blocked only where the deck describes our work (stage cards, scope, checkpoint),
+// not in the solution result or stage goals, which may describe the client's own savings ("דוח ביום במקום 3 שבועות").
+const OUR_TIMELINE = /\d+\s*שבועות|תוך (שבוע|שבועיים|חודש|חודשיים)|תאריך מסירה/;
 
 export function sanitizePlan(p: Plan, previous: Plan | null): { plan: Plan; removed: string[] } {
   const removed: string[] = [];
-  const list = (xs: string[]) =>
+  const bad = (s: string, timeline: boolean) => OUR_COST.test(s) || (timeline && OUR_TIMELINE.test(s));
+  const list = (xs: string[], timeline = false) =>
     xs.filter((x) => {
-      if (hasMoneyOrTime(x)) {
-        removed.push(x);
-        return false;
-      }
-      return true;
+      if (!bad(x, timeline)) return true;
+      removed.push(x);
+      return false;
     });
-  const scalar = (v: string, prev: string | undefined) => {
-    if (!hasMoneyOrTime(v)) return v;
+  const scalar = (v: string, prev: string | undefined, timeline = false) => {
+    if (!bad(v, timeline)) return v;
     removed.push(v);
-    return prev && !hasMoneyOrTime(prev) ? prev : "";
+    return prev && !bad(prev, timeline) ? prev : "";
   };
   const plan: Plan = {
     ...p,
@@ -176,18 +176,21 @@ export function sanitizePlan(p: Plan, previous: Plan | null): { plan: Plan; remo
       bullets: list(p.solution.bullets),
       result: scalar(p.solution.result, previous?.solution.result),
     },
-    parts: p.parts.map((x, i) => scalar(x, previous?.parts[i])),
+    parts: p.parts.map((x, i) => scalar(x, previous?.parts[i], true)),
     stages: p.stages.map((s, i) => ({
-      title: scalar(s.title, previous?.stages[i]?.title),
-      shortTitle: scalar(s.shortTitle, previous?.stages[i]?.shortTitle),
-      intro: scalar(s.intro, previous?.stages[i]?.intro),
-      bullets: list(s.bullets),
+      title: scalar(s.title, previous?.stages[i]?.title, true),
+      shortTitle: scalar(s.shortTitle, previous?.stages[i]?.shortTitle, true),
+      intro: scalar(s.intro, previous?.stages[i]?.intro, true),
+      bullets: list(s.bullets, true),
       goal: scalar(s.goal, previous?.stages[i]?.goal),
-      summary: scalar(s.summary, previous?.stages[i]?.summary),
+      summary: scalar(s.summary, previous?.stages[i]?.summary, true),
     })),
-    requirements: { intro: scalar(p.requirements.intro, previous?.requirements.intro), bullets: list(p.requirements.bullets) },
-    scopeSubtitle: scalar(p.scopeSubtitle, previous?.scopeSubtitle),
-    checkpoint: scalar(p.checkpoint, previous?.checkpoint),
+    requirements: {
+      intro: scalar(p.requirements.intro, previous?.requirements.intro, true),
+      bullets: list(p.requirements.bullets, true),
+    },
+    scopeSubtitle: scalar(p.scopeSubtitle, previous?.scopeSubtitle, true),
+    checkpoint: scalar(p.checkpoint, previous?.checkpoint, true),
   };
   return { plan, removed };
 }
