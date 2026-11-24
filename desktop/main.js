@@ -4,7 +4,9 @@ const {
   Tray,
   Menu,
   Notification,
+  dialog,
   ipcMain,
+  powerSaveBlocker,
   shell,
   clipboard,
   session,
@@ -24,10 +26,19 @@ let win = null;
 let tray = null;
 let quitting = false;
 let recording = false;
+let sleepBlocker = null;
 
 // ---------- config ----------
 
-const defaults = JSON.parse(fs.readFileSync(path.join(__dirname, "config.defaults.json"), "utf8"));
+// config.build.json (not in git) carries the production server URL and token baked into the installer.
+function readJson(file) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(__dirname, file), "utf8"));
+  } catch {
+    return {};
+  }
+}
+const defaults = { ...readJson("config.defaults.json"), ...readJson("config.build.json") };
 const configPath = () => path.join(app.getPath("userData"), "config.json");
 
 function loadConfig() {
@@ -38,10 +49,21 @@ function loadConfig() {
   }
 }
 
+/** Stores only what the user changed, so a newer installer's server URL / token still take effect. */
 function saveConfig(cfg) {
-  const merged = { ...loadConfig(), ...cfg };
+  let overrides = {};
+  try {
+    overrides = JSON.parse(fs.readFileSync(configPath(), "utf8"));
+  } catch {
+    overrides = {};
+  }
+  Object.assign(overrides, cfg);
+  for (const key of Object.keys(overrides)) {
+    if (overrides[key] === defaults[key]) delete overrides[key];
+  }
   fs.mkdirSync(path.dirname(configPath()), { recursive: true });
-  fs.writeFileSync(configPath(), JSON.stringify(merged, null, 2));
+  fs.writeFileSync(configPath(), JSON.stringify(overrides, null, 2));
+  const merged = { ...defaults, ...overrides };
   applyLoginItem(merged);
   return merged;
 }
@@ -53,22 +75,39 @@ function applyLoginItem(cfg) {
 
 // ---------- server calls (from main, so no CORS issues) ----------
 
+/** Hebrew message for an HTTP failure (the raw server text is technical English). */
+function httpMessage(status, serverError) {
+  if (status === 401) return "קוד הגישה שגוי (⚙ הגדרות)";
+  if (status === 404) return "השיחה לא נמצאה בשרת";
+  if (status === 429) return "השרת עמוס כרגע, מנסה שוב";
+  if (status >= 500) return "תקלה זמנית בשרת, מנסה שוב";
+  return serverError || `שגיאת שרת ${status}`;
+}
+
 async function api(method, route, body) {
   const cfg = loadConfig();
   const base = String(cfg.serverUrl || "").replace(/\/+$/, "");
   if (!base) throw new Error("לא הוגדרה כתובת שרת");
-  const res = await fetch(base + route, {
-    method,
-    headers: { "content-type": "application/json", "x-app-token": cfg.appToken || "" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  let res;
+  try {
+    res = await fetch(base + route, {
+      method,
+      headers: { "content-type": "application/json", "x-app-token": cfg.appToken || "" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(310_000), // the server's own limit is 300s
+    });
+  } catch {
+    throw new Error("אין חיבור לשרת. בודק שוב בעוד רגע.");
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok && res.status !== 409) {
-    throw new Error(data.error || `שגיאת שרת ${res.status}`);
+    console.warn("api", route, res.status, data.error);
+    throw new Error(httpMessage(res.status, data.error));
   }
   return { status: res.status, ...data };
 }
 
+/** Never throws: returns { ok:false, status, error } so the renderer can decide whether to retry. */
 async function uploadAudio({ sessionId, speaker, t, buffer, mime }) {
   const cfg = loadConfig();
   const base = String(cfg.serverUrl || "").replace(/\/+$/, "");
@@ -76,14 +115,23 @@ async function uploadAudio({ sessionId, speaker, t, buffer, mime }) {
   form.append("file", new Blob([Buffer.from(buffer)], { type: mime || "audio/webm" }), "chunk.webm");
   form.append("speaker", speaker);
   form.append("t", String(t));
-  const res = await fetch(`${base}/api/sessions/${sessionId}/audio`, {
-    method: "POST",
-    headers: { "x-app-token": cfg.appToken || "" },
-    body: form,
-  });
+  let res;
+  try {
+    res = await fetch(`${base}/api/sessions/${sessionId}/audio`, {
+      method: "POST",
+      headers: { "x-app-token": cfg.appToken || "" },
+      body: form,
+      signal: AbortSignal.timeout(70_000),
+    });
+  } catch {
+    return { ok: false, status: 0, error: "אין חיבור לשרת" };
+  }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `שגיאת תמלול ${res.status}`);
-  return data;
+  if (!res.ok) {
+    console.warn("upload", res.status, data.error);
+    return { ok: false, status: res.status, error: httpMessage(res.status, data.error) };
+  }
+  return { ok: true, ...data };
 }
 
 // ---------- window & tray ----------
@@ -140,14 +188,33 @@ function buildTrayMenu() {
       },
     },
     { type: "separator" },
-    {
-      label: "יציאה",
-      click: () => {
-        quitting = true;
-        app.quit();
-      },
-    },
+    { label: "יציאה", click: requestQuit },
   ]);
+}
+
+/** Quitting mid-call would lose the last minutes and the final version, so finish the call first. */
+async function requestQuit() {
+  if (!recording || !win) {
+    quitting = true;
+    return app.quit();
+  }
+  showWindow();
+  const { response } = await dialog.showMessageBox(win, {
+    type: "question",
+    buttons: ["סיים את השיחה וצא", "ביטול"],
+    defaultId: 0,
+    cancelId: 1,
+    title: "Pro Algorithm Live",
+    message: "שיחה מוקלטת כרגע.",
+    detail: "לפני היציאה האפליקציה תסיים את השיחה ותכין את הגרסה הסופית של התוכנית.",
+  });
+  if (response !== 0) return;
+  win.webContents.send("end-and-quit");
+  // Hard cap in case the final version hangs.
+  setTimeout(() => {
+    quitting = true;
+    app.quit();
+  }, 6 * 60 * 1000).unref();
 }
 
 function createTray() {
@@ -158,10 +225,19 @@ function createTray() {
   tray.on("click", showWindow);
 }
 
+// Windows drops the click handler of a garbage-collected Notification, so keep them alive until used.
+const liveNotifications = new Set();
+
 function notify(title, body, onClick) {
   if (!Notification.isSupported()) return;
   const n = new Notification({ title, body, icon: path.join(__dirname, "assets", "icon.png") });
-  if (onClick) n.on("click", onClick);
+  liveNotifications.add(n);
+  const release = () => liveNotifications.delete(n);
+  n.on("click", () => {
+    release();
+    if (onClick) onClick();
+  });
+  n.on("close", release);
   n.show();
 }
 
@@ -170,23 +246,33 @@ function notify(title, body, onClick) {
 function setupMicMonitor() {
   // Our own app also uses the mic while recording; ignore it.
   const ownExe = process.execPath.replace(/\\/g, "#");
+  let endedTimer = null;
   startMicMonitor({
     ignore: [ownExe, "electron.exe", "Pro Algorithm Live"],
     onStart: (apps) => {
+      clearTimeout(endedTimer);
+      endedTimer = null;
       const cfg = loadConfig();
       if (recording || !cfg.micAlerts) return;
       const who = apps.filter(Boolean).slice(0, 2).join(", ");
-      notify(
-        "נראה שאתה בשיחה",
-        `${who ? `המיקרופון פעיל ב-${who}. ` : ""}ללחוץ כאן כדי להפעיל את בניית תוכנית העבודה?`,
-        () => {
-          showWindow();
-          win.webContents.send("prompt-start", { source: "mic", apps });
-        },
-      );
+      notify("נראה שאתה בשיחה", `${who ? `המיקרופון פעיל ב-${who}. ` : ""}לחץ כאן כדי להתחיל לבנות את תוכנית העבודה.`, () => {
+        showWindow();
+        win.webContents.send("prompt-start", { source: "mic", apps, autoStart: true });
+      });
       if (win) win.webContents.send("mic-active", { active: true, apps });
     },
-    onStop: () => win && win.webContents.send("mic-active", { active: false }),
+    onStop: () => {
+      if (win) win.webContents.send("mic-active", { active: false });
+      // Zoom/Meet let go of the mic but we are still recording: after a minute, offer to end the call.
+      if (!recording) return;
+      clearTimeout(endedTimer);
+      endedTimer = setTimeout(() => {
+        endedTimer = null;
+        if (!recording || !win) return;
+        win.webContents.send("call-maybe-ended");
+        notify("השיחה הסתיימה?", "האפליקציה עדיין מקליטה. לחץ כאן כדי לסיים ולהכין את הגרסה הסופית.", showWindow);
+      }, 60_000);
+    },
   });
 }
 
@@ -219,12 +305,22 @@ function setupIpc() {
   ipcMain.handle("clipboard:write", (_e, text) => clipboard.writeText(String(text)));
   ipcMain.handle("recording:set", (_e, value) => {
     recording = !!value;
+    // Keep Windows from suspending the app in the middle of a long call.
+    if (recording && sleepBlocker === null) sleepBlocker = powerSaveBlocker.start("prevent-app-suspension");
+    if (!recording && sleepBlocker !== null) {
+      powerSaveBlocker.stop(sleepBlocker);
+      sleepBlocker = null;
+    }
     if (tray) {
       tray.setToolTip(recording ? "Pro Algorithm Live – מקליט" : "Pro Algorithm Live");
       tray.setContextMenu(buildTrayMenu());
     }
   });
   ipcMain.handle("app:version", () => app.getVersion());
+  ipcMain.handle("app:quit", () => {
+    quitting = true;
+    app.quit();
+  });
   ipcMain.handle("selftest:done", (_e, report) => {
     console.log("SELFTEST " + JSON.stringify(report));
     quitting = true;

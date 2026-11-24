@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Plan } from "@/lib/schema";
-import { Deck } from "./Deck";
+import { Deck, PlanText } from "./Deck";
 
 interface LiveState {
   status: "live" | "ended";
@@ -17,35 +17,65 @@ const POLL_MS = 3000;
 export function LiveView({ id, initial }: { id: string; initial: LiveState }) {
   const [state, setState] = useState<LiveState>(initial);
   const [toast, setToast] = useState(0);
-  const versionRef = useRef(initial.version);
+  const [missing, setMissing] = useState(false);
+  const stateRef = useRef(initial);
 
   useEffect(() => {
-    if (state.status === "ended") return;
+    if (state.status === "ended" || missing) return;
     let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    // One request at a time; the next tick starts only after this one settles, so answers can't arrive out of order.
     const tick = async () => {
-      try {
-        const res = await fetch(`/api/live/${id}`, { cache: "no-store" });
-        if (res.ok) {
-          const next = (await res.json()) as LiveState;
-          if (!stopped && (next.version !== versionRef.current || next.status !== state.status)) {
-            if (next.version > versionRef.current && versionRef.current > 0) setToast((n) => n + 1);
-            versionRef.current = next.version;
-            setState(next);
+      if (stopped) return;
+      if (!document.hidden) {
+        try {
+          const res = await fetch(`/api/live/${id}`, { cache: "no-store", signal: AbortSignal.timeout(8000) });
+          if (res.status === 404) {
+            setMissing(true);
+            return;
           }
+          if (res.ok && !stopped) {
+            const next = (await res.json()) as LiveState;
+            const cur = stateRef.current;
+            const newer = next.version > cur.version || (next.version === cur.version && next.status !== cur.status);
+            if (newer) {
+              if (cur.version > 0 && JSON.stringify(next.plan) !== JSON.stringify(cur.plan)) setToast((n) => n + 1);
+              stateRef.current = next;
+              setState(next);
+              if (next.status === "ended") return;
+            }
+          }
+        } catch {
+          // offline for a moment; try again on the next tick
         }
-      } catch {
-        // offline for a moment; try again on the next tick
+      }
+      timer = setTimeout(tick, POLL_MS);
+    };
+    const onVisible = () => {
+      if (!document.hidden && timer) {
+        clearTimeout(timer);
+        tick();
       }
     };
-    const timer = setInterval(tick, POLL_MS);
+    timer = setTimeout(tick, POLL_MS);
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       stopped = true;
-      clearInterval(timer);
+      if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [id, state.status]);
+  }, [id, state.status, missing]);
 
   const name = state.clientName || state.plan?.clientName || "";
   const live = state.status === "live";
+
+  // Keeps the browser tab and the "Save as PDF" file name in step with the client name learned during the call.
+  useEffect(() => {
+    document.title = name ? `תוכנית עבודה – ${name} | Pro Algorithm` : "תוכנית עבודה | Pro Algorithm";
+  }, [name]);
+
+  if (missing) return <div className="center-msg">הקישור לא נמצא או שפג תוקפו.</div>;
 
   return (
     <>
@@ -56,12 +86,15 @@ export function LiveView({ id, initial }: { id: string; initial: LiveState }) {
         </div>
         <span className={`chip ${live ? "" : "ended"}`}>
           <span className="dot" />
-          {live ? "מתעדכן בזמן אמת" : `עודכן ${new Date(state.updatedAt).toLocaleDateString("he-IL")}`}
+          {live
+            ? "מתעדכן בזמן אמת"
+            : `עודכן ${new Date(state.updatedAt).toLocaleDateString("he-IL", { timeZone: "Asia/Jerusalem" })}`}
         </span>
       </header>
       <main className="deck">
         <Deck plan={state.plan} />
       </main>
+      <PlanText plan={state.plan} />
       {toast > 0 && (
         <div className="toast" key={toast}>
           התוכנית עודכנה לפי השיחה

@@ -10,3 +10,4 @@ next-env.d.ts
 .vercel
 .claude/settings.local.json
 *.log
+desktop/config.build.json

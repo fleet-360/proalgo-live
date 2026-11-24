@@ -1,3 +1,4 @@
+import { effectiveStatus } from "@/lib/schema";
 import { store } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
@@ -9,7 +10,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   if (!meta) return Response.json({ error: "not found" }, { status: 404 });
   return Response.json(
     {
-      status: meta.status,
+      status: effectiveStatus(meta),
       clientName: meta.clientName,
       plan: meta.plan,
       version: meta.version,

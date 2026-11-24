@@ -90,15 +90,27 @@ function Box({
   const [fs, setFs] = useState(size);
   const flash = useFlash(watch);
   useIsoLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    let s = size;
-    el.style.fontSize = `${s}px`;
-    while (s > min && (el.scrollHeight > h + 1 || el.scrollWidth > w + 1)) {
-      s -= 1;
+    const fit = () => {
+      const el = ref.current;
+      if (!el) return;
+      let s = size;
       el.style.fontSize = `${s}px`;
-    }
-    setFs(s);
+      while (s > min && (el.scrollHeight > h + 1 || el.scrollWidth > w + 1)) {
+        s -= 1;
+        el.style.fontSize = `${s}px`;
+      }
+      setFs(s);
+    };
+    fit();
+    // Heebo may finish loading after the first measure; measure again so text is never clipped.
+    const fonts = typeof document !== "undefined" ? document.fonts : undefined;
+    let alive = true;
+    fonts?.ready.then(() => alive && fit());
+    fonts?.addEventListener?.("loadingdone", fit);
+    return () => {
+      alive = false;
+      fonts?.removeEventListener?.("loadingdone", fit);
+    };
   }, [watch, size, min, w, h]);
   return (
     <div
@@ -173,7 +185,7 @@ function StageCard({ stage, title, body }: { stage: Stage; title: [number, numbe
 function PartLabel({ letter, name, x, y, w, h, size }: { letter: string; name: string; x: number; y: number; w: number; h: number; size: number }) {
   return (
     <Box x={x} y={y} w={w} h={h} size={size} min={22} className="circle-sub on-dark" watch={name}>
-      <div>{name ? `${RLM}חלק ${letter} – ${name}` : <Skel widths={[70, 50]} />}</div>
+      <div style={{ width: "100%" }}>{name ? `${RLM}חלק ${letter} – ${name}` : <Skel widths={[70, 50]} />}</div>
     </Box>
   );
 }
@@ -244,16 +256,69 @@ export function Deck({ plan }: { plan: Plan | null }) {
             </Box>
           </div>
         ))}
-        <Box x={250} y={822} w={416} h={104} size={52} min={26} style={pillStyle} watch="count">
+        <Box x={250} y={822} w={416} h={104} size={52} min={26} className="on-dark" style={pillStyle} watch="count">
           <div style={{ fontWeight: 700, lineHeight: 1.1 }}>5 שלבים</div>
           <div style={{ fontSize: "0.52em", fontWeight: 400, marginTop: 4 }}>היקף הפרויקט</div>
         </Box>
-        <Box x={1262} y={820} w={416} h={104} size={46} min={24} style={pillStyle} watch={p.checkpoint}>
+        <Box x={1262} y={820} w={416} h={104} size={46} min={24} className="on-dark" style={pillStyle} watch={p.checkpoint}>
           <div style={{ fontWeight: 800, lineHeight: 1.1, letterSpacing: "-0.02em" }}>{p.checkpoint || "—"}</div>
           <div style={{ fontSize: "0.6em", fontWeight: 400, marginTop: 4 }}>נקודת בקרה</div>
         </Box>
       </Frame>
     </>
+  );
+}
+
+/** Phone view: the same plan as readable text (the 1920px slides shrink to ~4px text on a phone). */
+export function PlanText({ plan }: { plan: Plan | null }) {
+  const p = plan ?? EMPTY_PLAN;
+  if (!p.currentProcess.bullets.length && !p.solution.title) {
+    return (
+      <section className="plan-text">
+        <p className="muted">התוכנית נבנית תוך כדי השיחה…</p>
+      </section>
+    );
+  }
+  return (
+    <section className="plan-text">
+      <h2>התהליך היום</h2>
+      {p.currentProcess.intro && <p>{p.currentProcess.intro}</p>}
+      <ul>{p.currentProcess.bullets.map((b, i) => <li key={i}>{b}</li>)}</ul>
+
+      <h2>הפתרון{p.solution.title ? `: ${p.solution.title}` : ""}</h2>
+      {p.solution.intro && <p>{p.solution.intro}</p>}
+      <ul>{p.solution.bullets.map((b, i) => <li key={i}>{b}</li>)}</ul>
+      {p.solution.result && <p className="strong">התוצאה: {p.solution.result}</p>}
+
+      <h2>שלבי העבודה</h2>
+      {p.stages.map((s, i) =>
+        s.title ? (
+          <div className="stage" key={i}>
+            <h3>
+              <span className="num">{String(i + 1).padStart(2, "0")}</span> {s.title}
+            </h3>
+            {s.intro && <p>{s.intro}</p>}
+            <ul>{s.bullets.map((b, j) => <li key={j}>{b}</li>)}</ul>
+            {s.goal && <p className="strong">מטרה: {s.goal}</p>}
+          </div>
+        ) : null,
+      )}
+
+      {p.requirements.bullets.length > 0 && (
+        <>
+          <h2>מה נדרש מכם</h2>
+          {p.requirements.intro && <p>{p.requirements.intro}</p>}
+          <ul>{p.requirements.bullets.map((b, i) => <li key={i}>{b}</li>)}</ul>
+        </>
+      )}
+      {(p.scopeSubtitle || p.checkpoint) && (
+        <>
+          <h2>היקף ההצעה</h2>
+          {p.scopeSubtitle && <p>{p.scopeSubtitle}</p>}
+          {p.checkpoint && <p className="strong">נקודת בקרה: {p.checkpoint}</p>}
+        </>
+      )}
+    </section>
   );
 }
 

@@ -46,11 +46,22 @@
         <div class="meter"><span>אני</span><div class="bar"><i id="lvl-sales"></i></div></div>
         <div class="meter"><span>לקוח</span><div class="bar"><i id="lvl-client"></i></div></div>
       </div>
-      <div class="warn hidden" id="loopback-warn">לא הצלחתי לקלוט את סאונד המחשב. רק הצד שלך מוקלט.</div>
+      <div class="alert hidden" id="loopback-warn">
+        <div><b>הלקוח לא נקלט.</b> לא הצלחתי לקלוט את סאונד המחשב, כרגע רק הצד שלך מוקלט.</div>
+        <button id="btn-loopback-retry">נסה שוב לקלוט את הלקוח</button>
+      </div>
+      <div class="alert hidden" id="device-warn"></div>
+      <div class="alert hidden" id="call-ended-banner">
+        <div><b>נראה שהשיחה ב-Zoom הסתיימה.</b> לסיים גם כאן?</div>
+        <div class="row">
+          <button class="primary" id="btn-end-from-banner">סיים שיחה</button>
+          <button id="btn-keep">עדיין בשיחה</button>
+        </div>
+      </div>
 
       <div class="row tight">
         <div class="timer" id="timer">00:00</div>
-        <div class="next" id="next-update"></div>
+        <div class="next"><span id="next-update"></span><span id="queue-info" class="queue hidden"></span></div>
         <button id="btn-update">עדכן עכשיו</button>
       </div>
 
@@ -60,6 +71,7 @@
           <input id="note" type="text" placeholder="תיקון או מיקוד לתוכנית…" autocomplete="off" />
           <button id="btn-note">שלח</button>
         </div>
+        <div class="muted small hidden" id="note-status"></div>
       </div>
 
       <div class="panel" id="insights">
@@ -89,6 +101,7 @@
           <button id="btn-open2">פתח בדפדפן</button>
         </div>
       </div>
+      <button class="hidden" id="btn-retry-final">נסה שוב ליצור גרסה סופית</button>
       <button class="primary big" id="btn-new">שיחה חדשה</button>
     </section>
 

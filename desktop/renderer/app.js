@@ -4,6 +4,7 @@
 const $ = (id) => document.getElementById(id);
 const views = ["idle", "live", "ended", "settings"];
 let currentView = "idle";
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function show(view) {
   for (const v of views) $(`view-${v}`).classList.toggle("hidden", v !== view);
@@ -15,10 +16,16 @@ function setStatus(text, rec = false) {
   $("status").classList.toggle("rec", rec);
 }
 
+/** Error text for the Hebrew UI, without Electron's "Error invoking remote method" wrapper. */
+function errText(err) {
+  const raw = typeof err === "string" ? err : (err && err.message) || String(err);
+  return raw.replace(/^Error invoking remote method '[^']+':\s*(\w*Error:\s*)?/, "");
+}
+
 function showError(id, err) {
   const el = $(id);
   if (!err) return el.classList.add("hidden");
-  el.textContent = typeof err === "string" ? err : err.message || String(err);
+  el.textContent = errText(err);
   el.classList.remove("hidden");
 }
 
@@ -31,7 +38,7 @@ const fmt = (ms) => {
 };
 
 // ------------------------------------------------------------------
-// Recording one audio channel in standalone ~15s webm chunks.
+// Recording one audio channel in standalone webm chunks.
 // Silent chunks are dropped so speech-to-text doesn't invent words.
 // ------------------------------------------------------------------
 
@@ -41,34 +48,48 @@ let minVoicedTicks = 5; // at least ~0.5s of speech per chunk
 let uploadFn = (payload) => live.uploadAudio(payload);
 
 class ChannelRecorder {
-  constructor({ track, speaker, audioCtx, meterEl, chunkMs, sessionStart, onChunk }) {
+  constructor({ track, speaker, audioCtx, meterEl, chunkMs, sessionStart, onChunk, onDead }) {
+    this.track = track;
     this.stream = new MediaStream([track]);
     this.speaker = speaker;
     this.meterEl = meterEl;
     this.chunkMs = chunkMs;
     this.sessionStart = sessionStart;
     this.onChunk = onChunk;
+    this.onDead = onDead;
     this.current = null;
+    this.dead = false;
+    this.lastVoice = Date.now();
     const src = audioCtx.createMediaStreamSource(this.stream);
     this.analyser = audioCtx.createAnalyser();
     this.analyser.fftSize = 1024;
     src.connect(this.analyser);
     this.buf = new Float32Array(this.analyser.fftSize);
+    // Headset unplugged, Bluetooth dropped, sleep/resume: the track ends and this channel must be replaced.
+    track.addEventListener("ended", () => this._die());
   }
 
   start() {
     this.current = this._newRecorder();
     this.cycleTimer = setInterval(() => {
-      const old = this.current;
-      this.current = this._newRecorder(); // start the next one first so no words fall in a gap
-      old.rec.stop();
+      try {
+        const old = this.current;
+        this.current = this._newRecorder(); // start the next one first so no words fall in a gap
+        if (old && old.rec.state !== "inactive") old.rec.stop();
+      } catch (e) {
+        console.warn(`${this.speaker} recorder failed`, e);
+        this._die();
+      }
     }, this.chunkMs);
     this.levelTimer = setInterval(() => {
       this.analyser.getFloatTimeDomainData(this.buf);
       let sum = 0;
       for (let i = 0; i < this.buf.length; i++) sum += this.buf[i] * this.buf[i];
       const rms = Math.sqrt(sum / this.buf.length);
-      if (rms > VOICE_RMS && this.current) this.current.voiced++;
+      if (rms > VOICE_RMS) {
+        this.lastVoice = Date.now();
+        if (this.current) this.current.voiced++;
+      }
       this.meterEl.style.width = `${Math.min(100, rms * 600)}%`;
     }, 100);
   }
@@ -86,12 +107,23 @@ class ChannelRecorder {
     return state;
   }
 
+  _die() {
+    if (this.dead) return;
+    this.stop();
+    this.dead = true;
+    if (this.onDead) this.onDead(this);
+  }
+
   /** Stops recording and emits the last partial chunk. */
   stop() {
     clearInterval(this.cycleTimer);
     clearInterval(this.levelTimer);
     this.meterEl.style.width = "0%";
-    if (this.current && this.current.rec.state !== "inactive") this.current.rec.stop();
+    try {
+      if (this.current && this.current.rec.state !== "inactive") this.current.rec.stop();
+    } catch {
+      // the stream is already gone
+    }
     this.current = null;
   }
 }
@@ -101,98 +133,210 @@ class ChannelRecorder {
 // ------------------------------------------------------------------
 
 let cfg = null;
-let sess = null; // { id, publicUrl, start, recorders, streams, audioCtx, pending:Set, ... }
+let sess = null; // the current call (see startSession)
+let starting = false;
+
+async function captureMic() {
+  return navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
+}
+
+/** Computer sound = the client (Zoom / Meet / Teams output). Returns null if it can't be captured. */
+async function captureLoopback() {
+  try {
+    const loop = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: { frameRate: 1 } });
+    loop.getVideoTracks().forEach((t) => (t.enabled = false));
+    if (!loop.getAudioTracks().length) {
+      loop.getTracks().forEach((t) => t.stop());
+      return null;
+    }
+    return loop;
+  } catch (e) {
+    console.warn("loopback capture failed", e);
+    return null;
+  }
+}
+
+function addRecorder(s, stream, speaker) {
+  const rec = new ChannelRecorder({
+    track: stream.getAudioTracks()[0],
+    speaker,
+    audioCtx: s.audioCtx,
+    meterEl: $(speaker === "client" ? "lvl-client" : "lvl-sales"),
+    chunkMs: s.chunkMs,
+    sessionStart: s.start,
+    onChunk: (blob, t, who) => uploadChunk(s, blob, t, who),
+    onDead: (r) => onChannelDead(s, r),
+  });
+  s.streams.push(stream);
+  s.recorders.push(rec);
+  rec.start();
+  return rec;
+}
 
 async function startSession() {
+  if (starting || (sess && !sess.ended)) return;
+  starting = true;
   showError("idle-error", null);
   $("btn-start").disabled = true;
   setStatus("מתחבר לשרת…");
+  let mic = null;
+  let loop = null;
   try {
     cfg = await live.getConfig();
     if (!cfg.serverUrl) throw new Error("צריך להגדיר כתובת שרת (⚙ הגדרות).");
 
-    // Microphone = the salesperson.
-    const mic = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
-
-    // Computer sound = the client (Zoom / Meet / Teams output).
-    let loop = null;
-    try {
-      loop = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: { frameRate: 1 } });
-      loop.getVideoTracks().forEach((t) => (t.enabled = false));
-      if (!loop.getAudioTracks().length) loop = null;
-    } catch (e) {
-      console.warn("loopback capture failed", e);
-      loop = null;
-    }
-
+    mic = await captureMic(); // the salesperson
+    loop = await captureLoopback(); // the client
     const created = await live.api("POST", "/api/sessions", { clientName: $("client-name").value.trim() });
+
     const start = Date.now();
-    const audioCtx = new AudioContext();
-    sess = {
+    const s = {
       id: created.id,
       publicUrl: created.publicUrl,
       start,
-      audioCtx,
-      streams: [mic, loop].filter(Boolean),
-      pending: new Set(),
+      audioCtx: new AudioContext(),
+      chunkMs: Math.max(8, Number(cfg.chunkSeconds) || 20) * 1000,
+      streams: [],
       recorders: [],
+      inflight: new Set(), // upload promises still running
+      waiting: 0, // chunks waiting to be resent
       lastAnalyze: Date.now(),
       analyzing: false,
+      rerunAfter: false,
       ended: false,
+      finalizing: false,
     };
+    sess = s;
+    addRecorder(s, mic, "sales");
+    if (loop) addRecorder(s, loop, "client");
+    mic = loop = null; // owned by the session now
 
-    const chunkMs = Math.max(8, Number(cfg.chunkSeconds) || 15) * 1000;
-    const common = { audioCtx, chunkMs, sessionStart: start, onChunk: uploadChunk };
-    sess.recorders.push(new ChannelRecorder({ ...common, track: mic.getAudioTracks()[0], speaker: "sales", meterEl: $("lvl-sales") }));
-    if (loop) {
-      sess.recorders.push(new ChannelRecorder({ ...common, track: loop.getAudioTracks()[0], speaker: "client", meterEl: $("lvl-client") }));
-    }
-    sess.recorders.forEach((r) => r.start());
-    $("loopback-warn").classList.toggle("hidden", !!loop);
-
-    await live.setRecording(true);
-    await live.copy(sess.publicUrl);
-    $("public-url").textContent = sess.publicUrl;
+    // Fresh screen for this call.
+    showError("live-error", null);
+    $("loopback-warn").classList.toggle("hidden", s.recorders.length === 2);
+    $("device-warn").classList.add("hidden");
+    $("call-ended-banner").classList.add("hidden");
+    $("note-status").classList.add("hidden");
+    $("timer").textContent = "00:00";
+    $("next-update").textContent = "";
+    updateQueueInfo(s);
+    $("public-url").textContent = s.publicUrl;
     $("transcript").innerHTML = "";
     resetInsights();
+
+    await live.setRecording(true);
+    await live.copy(s.publicUrl);
     show("live");
     setStatus("מקשיב לשיחה", true);
-    sess.ticker = setInterval(tick, 1000);
+    s.ticker = setInterval(tick, 1000);
   } catch (e) {
     console.error(e);
+    [mic, loop].forEach((st) => st && st.getTracks().forEach((t) => t.stop()));
     const msg =
       e && e.name === "NotAllowedError"
         ? "אין הרשאה למיקרופון. צריך לאשר גישה למיקרופון בהגדרות הפרטיות של Windows."
-        : e.message || String(e);
+        : errText(e);
     showError("idle-error", msg);
     setStatus("מוכן");
-    cleanupStreams();
   } finally {
+    starting = false;
     $("btn-start").disabled = false;
   }
 }
 
-function uploadChunk(blob, t, speaker) {
-  if (!sess) return;
-  const id = sess.id;
+/** A channel's device went away: show it, and keep trying to get it back while the call is on. */
+async function onChannelDead(s, rec) {
+  if (s.ended) return;
+  s.recorders = s.recorders.filter((r) => r !== rec);
+  const who = rec.speaker === "client" ? "סאונד המחשב (הלקוח)" : "המיקרופון";
+  const warn = $("device-warn");
+  warn.innerHTML = `<div><b>${who} התנתק.</b> מנסה להתחבר מחדש…</div>`;
+  warn.classList.remove("hidden");
+  for (let attempt = 0; !s.ended; attempt++) {
+    await sleep(attempt === 0 ? 1500 : 5000);
+    if (s.ended) return;
+    try {
+      const stream = rec.speaker === "client" ? await captureLoopback() : await captureMic();
+      if (!stream) continue;
+      if (s.ended) return stream.getTracks().forEach((t) => t.stop());
+      addRecorder(s, stream, rec.speaker);
+      warn.classList.add("hidden");
+      if (rec.speaker === "client") $("loopback-warn").classList.add("hidden");
+      return;
+    } catch (e) {
+      console.warn("reconnect failed", e);
+    }
+  }
+}
+
+async function retryLoopback() {
+  const s = sess;
+  if (!s || s.ended) return;
+  $("btn-loopback-retry").disabled = true;
+  try {
+    const loop = await captureLoopback();
+    if (loop && !s.ended && !s.recorders.some((r) => r.speaker === "client")) {
+      addRecorder(s, loop, "client");
+      $("loopback-warn").classList.add("hidden");
+    } else if (loop) {
+      loop.getTracks().forEach((t) => t.stop());
+    }
+  } finally {
+    $("btn-loopback-retry").disabled = false;
+  }
+}
+
+// ----- uploads: retried with backoff so a Wi-Fi blip doesn't lose the client's words -----
+
+const RETRY_DELAYS = [2000, 5000, 10000, 15000, 15000, 15000, 15000, 15000];
+
+function updateQueueInfo(s) {
+  const el = $("queue-info");
+  if (s !== sess) return;
+  el.textContent = s.waiting ? `${s.waiting} קטעים ממתינים לשליחה (אין חיבור יציב)` : "";
+  el.classList.toggle("hidden", !s.waiting);
+}
+
+function uploadChunk(s, blob, t, speaker) {
   const p = (async () => {
     const buffer = await blob.arrayBuffer();
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const res = await uploadFn({ sessionId: id, speaker, t, buffer, mime: blob.type });
-        if (res.text) addSegment(speaker, res.text);
-        showError("live-error", null);
-        return;
-      } catch (e) {
-        if (attempt === 1) showError("live-error", `תמלול נכשל: ${e.message || e}`);
-        else await new Promise((r) => setTimeout(r, 2000));
+    let waitingCounted = false;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        let res;
+        try {
+          res = await uploadFn({ sessionId: s.id, speaker, t, buffer, mime: blob.type });
+        } catch (e) {
+          res = { ok: false, status: 0, error: errText(e) };
+        }
+        if (res.ok !== false) {
+          if (res.text && s === sess) addSegment(speaker, res.text);
+          if (s === sess) showError("live-error", null);
+          return;
+        }
+        const retryable = !res.status || res.status >= 500 || res.status === 408 || res.status === 429;
+        if (!retryable || attempt >= RETRY_DELAYS.length) {
+          if (s === sess) showError("live-error", `קטע מהשיחה לא תומלל: ${res.error}`);
+          return;
+        }
+        if (!waitingCounted) {
+          waitingCounted = true;
+          s.waiting++;
+          updateQueueInfo(s);
+        }
+        await sleep(RETRY_DELAYS[attempt]);
+      }
+    } finally {
+      if (waitingCounted) {
+        s.waiting--;
+        updateQueueInfo(s);
       }
     }
   })();
-  sess.pending.add(p);
-  p.finally(() => sess && sess.pending.delete(p));
+  s.inflight.add(p);
+  p.finally(() => s.inflight.delete(p));
 }
 
 function addSegment(speaker, text) {
@@ -209,87 +353,156 @@ function addSegment(speaker, text) {
 }
 
 function tick() {
-  if (!sess || sess.ended) return;
-  $("timer").textContent = fmt(Date.now() - sess.start);
+  const s = sess;
+  if (!s || s.ended) return;
+  $("timer").textContent = fmt(Date.now() - s.start);
   const every = Math.max(30, Number(cfg.analyzeEverySeconds) || 120) * 1000;
-  const left = every - (Date.now() - sess.lastAnalyze);
-  if (sess.analyzing) $("next-update").textContent = "ה-AI מעדכן את התוכנית…";
+  const left = every - (Date.now() - s.lastAnalyze);
+  if (s.analyzing) $("next-update").textContent = "ה-AI מעדכן את התוכנית…";
   else $("next-update").textContent = `עדכון הבא בעוד ${fmt(left)}`;
-  if (left <= 0 && !sess.analyzing) runAnalyze(false);
+  if (left <= 0 && !s.analyzing) runAnalyze(false);
 }
 
 async function runAnalyze(force) {
-  if (!sess || sess.analyzing) return;
-  sess.analyzing = true;
-  sess.lastAnalyze = Date.now();
+  const s = sess;
+  if (!s || s.ended) return;
+  if (s.analyzing) {
+    // A note or "update now" while an update runs: do one more pass right after it.
+    if (force) s.rerunAfter = true;
+    return;
+  }
+  s.analyzing = true;
+  s.lastAnalyze = Date.now();
   $("btn-update").disabled = true;
+  let busy = false;
   try {
-    const res = await live.api("POST", `/api/sessions/${sess.id}/analyze`, { force: !!force });
+    const res = await live.api("POST", `/api/sessions/${s.id}/analyze`, { force: !!force });
+    if (s !== sess) return;
     if (res.insights) renderInsights(res.insights);
-    if (res.error) showError("live-error", res.error);
+    busy = res.status === 409;
+    if (res.error) showError("live-error", `עדכון התוכנית נכשל: ${res.error}`);
+    else if (!busy) showError("live-error", null);
   } catch (e) {
-    showError("live-error", `עדכון התוכנית נכשל: ${e.message || e}`);
+    if (s === sess) showError("live-error", `עדכון התוכנית נכשל: ${errText(e)}`);
   } finally {
-    if (sess) {
-      sess.analyzing = false;
-      sess.lastAnalyze = Date.now();
+    s.analyzing = false;
+    s.lastAnalyze = Date.now();
+    if (s === sess) $("btn-update").disabled = false;
+    if (s === sess && !s.ended) {
+      $("note-status").classList.add("hidden");
+      if (s.rerunAfter || (busy && force)) {
+        s.rerunAfter = false;
+        setTimeout(() => runAnalyze(true), busy ? 10000 : 0);
+      }
     }
-    $("btn-update").disabled = false;
   }
 }
 
 async function sendNote() {
+  const s = sess;
   const text = $("note").value.trim();
-  if (!text || !sess) return;
+  if (!text || !s || s.ended) return;
   $("btn-note").disabled = true;
   try {
-    await live.api("POST", `/api/sessions/${sess.id}/note`, { text });
+    await live.api("POST", `/api/sessions/${s.id}/note`, { text });
     $("note").value = "";
+    const ns = $("note-status");
+    ns.textContent = s.analyzing ? "ההערה תיכנס בעדכון שמיד אחרי העדכון הנוכחי" : "ההערה נשלחה, מעדכן את התוכנית…";
+    ns.classList.remove("hidden");
     runAnalyze(true);
   } catch (e) {
-    showError("live-error", e.message || String(e));
+    showError("live-error", errText(e));
   } finally {
     $("btn-note").disabled = false;
   }
 }
 
 async function endSession() {
-  if (!sess || sess.ended) return;
-  sess.ended = true;
-  clearInterval(sess.ticker);
+  const s = sess;
+  if (!s || s.ended) return;
+  s.ended = true;
+  s.finalizing = true;
+  clearInterval(s.ticker);
   $("btn-end").disabled = true;
-  sess.recorders.forEach((r) => r.stop());
+  s.recorders.forEach((r) => r.stop());
   setStatus("מסיים…");
-  $("ended-url").textContent = sess.publicUrl;
+  $("ended-url").textContent = s.publicUrl;
   $("ended-msg").textContent = "מתמלל את הדקות האחרונות ומכין את הגרסה הסופית…";
+  $("btn-retry-final").classList.add("hidden");
+  $("btn-new").disabled = true;
+  $("btn-new").textContent = "מכין גרסה סופית…";
   show("ended");
-  await new Promise((r) => setTimeout(r, 400)); // let the last chunks fire onstop
-  await Promise.allSettled([...sess.pending]);
-  cleanupStreams();
+
+  await sleep(400); // let the last chunks fire onstop
+  // Give queued uploads up to 90s to get through.
+  await Promise.race([Promise.allSettled([...s.inflight]), sleep(90000)]);
+  cleanupStreams(s);
   await live.setRecording(false);
-  // Wait for an analysis already running, then run the final one.
-  for (let i = 0; i < 60 && sess.analyzing; i++) await new Promise((r) => setTimeout(r, 1000));
-  try {
-    const res = await live.api("POST", `/api/sessions/${sess.id}/analyze`, { final: true });
-    if (res.error) {
-      $("ended-msg").textContent = `הגרסה הסופית לא נוצרה: ${res.error}. הקישור מציג את הגרסה האחרונה.`;
-    } else if (!res.version) {
-      $("ended-msg").textContent = "לא נקלט מספיק דיבור כדי לבנות תוכנית. כדאי לבדוק את המיקרופון ואת הגדרות התמלול.";
-    } else {
-      $("ended-msg").textContent = "הגרסה הסופית מוכנה. זה הקישור לתוכנית, גם בשביל המתכנת.";
-    }
-  } catch (e) {
-    $("ended-msg").textContent = `הגרסה הסופית לא נוצרה: ${e.message || e}. הקישור מציג את הגרסה האחרונה.`;
-  }
+
+  // An update may still be running; the final pass needs the lock, so wait for it (up to 5 minutes).
+  for (let i = 0; i < 300 && s.analyzing; i++) await sleep(1000);
+  await finalizeSession(s);
+
+  s.finalizing = false;
   setStatus("מוכן");
   $("btn-end").disabled = false;
+  $("btn-new").disabled = false;
+  $("btn-new").textContent = "שיחה חדשה";
 }
 
-function cleanupStreams() {
-  if (!sess) return;
-  for (const s of sess.streams) s.getTracks().forEach((t) => t.stop());
-  sess.streams = [];
-  if (sess.audioCtx && sess.audioCtx.state !== "closed") sess.audioCtx.close();
+/** Asks the server for the final version, waiting while another update holds the lock. */
+async function finalizeSession(s) {
+  const msg = $("ended-msg");
+  const deadline = Date.now() + 5 * 60 * 1000;
+  for (;;) {
+    let res;
+    try {
+      res = await live.api("POST", `/api/sessions/${s.id}/analyze`, { final: true });
+    } catch (e) {
+      res = { error: errText(e) };
+    }
+    if (res.status === 409 || res.busy) {
+      if (Date.now() < deadline) {
+        msg.textContent = "ה-AI מסיים עדכון קודם, ואז יכין את הגרסה הסופית…";
+        await sleep(5000);
+        continue;
+      }
+      msg.textContent = "הגרסה הסופית עדיין בעבודה. הקישור יתעדכן לבד, ואפשר לנסות שוב.";
+      $("btn-retry-final").classList.remove("hidden");
+      return;
+    }
+    if (res.error) {
+      msg.textContent = `הגרסה הסופית לא נוצרה (${res.error}). הקישור מציג את הגרסה האחרונה.`;
+      $("btn-retry-final").classList.remove("hidden");
+      return;
+    }
+    if (!res.plan) {
+      msg.textContent = "לא נקלט מספיק דיבור עסקי כדי לבנות תוכנית. כדאי לבדוק את המיקרופון ואת הקליטה של הלקוח.";
+      return;
+    }
+    if (res.insights) renderInsights(res.insights);
+    msg.textContent = "הגרסה הסופית מוכנה. זה הקישור לתוכנית, גם בשביל המתכנת.";
+    return;
+  }
+}
+
+async function retryFinal() {
+  const s = sess;
+  if (!s || s.finalizing) return;
+  s.finalizing = true;
+  $("btn-retry-final").classList.add("hidden");
+  $("btn-new").disabled = true;
+  $("ended-msg").textContent = "מנסה שוב ליצור את הגרסה הסופית…";
+  await finalizeSession(s);
+  s.finalizing = false;
+  $("btn-new").disabled = false;
+}
+
+function cleanupStreams(s) {
+  if (!s) return;
+  for (const st of s.streams) st.getTracks().forEach((t) => t.stop());
+  s.streams = [];
+  if (s.audioCtx && s.audioCtx.state !== "closed") s.audioCtx.close();
 }
 
 // ------------------------------------------------------------------
@@ -358,32 +571,52 @@ async function saveSettings() {
 // ------------------------------------------------------------------
 
 $("btn-start").addEventListener("click", startSession);
-$("client-name").addEventListener("keydown", (e) => e.key === "Enter" && startSession());
+$("client-name").addEventListener("keydown", (e) => e.key === "Enter" && !$("btn-start").disabled && startSession());
 $("btn-update").addEventListener("click", () => runAnalyze(true));
 $("btn-note").addEventListener("click", sendNote);
-$("note").addEventListener("keydown", (e) => e.key === "Enter" && sendNote());
+$("note").addEventListener("keydown", (e) => e.key === "Enter" && !$("btn-note").disabled && sendNote());
 $("btn-end").addEventListener("click", endSession);
+$("btn-end-from-banner").addEventListener("click", endSession);
+$("btn-keep").addEventListener("click", () => $("call-ended-banner").classList.add("hidden"));
+$("btn-loopback-retry").addEventListener("click", retryLoopback);
+$("btn-retry-final").addEventListener("click", retryFinal);
 $("btn-copy").addEventListener("click", () => sess && live.copy(sess.publicUrl));
 $("btn-open").addEventListener("click", () => sess && live.openExternal(sess.publicUrl));
 $("btn-copy2").addEventListener("click", () => sess && live.copy(sess.publicUrl));
 $("btn-open2").addEventListener("click", () => sess && live.openExternal(sess.publicUrl));
 $("btn-new").addEventListener("click", () => {
+  if (sess && sess.finalizing) return;
   sess = null;
   $("client-name").value = "";
+  $("mic-banner").classList.add("hidden");
+  showError("idle-error", null);
   show("idle");
 });
 $("btn-settings").addEventListener("click", openSettings);
 $("btn-save").addEventListener("click", saveSettings);
 $("btn-cancel").addEventListener("click", () => show(currentView));
 
-live.onPromptStart(() => {
-  if (currentView === "idle") {
-    $("mic-banner").classList.remove("hidden");
-    $("client-name").focus();
-  }
+// Clicking the "looks like you're on a call" notification starts listening right away.
+live.onPromptStart(({ autoStart } = {}) => {
+  if (currentView !== "idle") return;
+  if (autoStart) return startSession();
+  $("mic-banner").classList.remove("hidden");
+  $("client-name").focus();
 });
 live.onMicActive(({ active }) => {
   if (currentView === "idle") $("mic-banner").classList.toggle("hidden", !active);
+});
+// Zoom/Meet released the mic a while ago but we're still recording: offer to end.
+live.onCallMaybeEnded(() => {
+  if (sess && !sess.ended && currentView === "live") $("call-ended-banner").classList.remove("hidden");
+});
+// Tray "exit" during a call: finish properly first.
+live.onEndAndQuit(async () => {
+  try {
+    if (sess && !sess.ended) await endSession();
+  } finally {
+    live.quit();
+  }
 });
 
 (async () => {
@@ -398,14 +631,10 @@ async function runSelfTest() {
   minVoicedTicks = 0; // upload even silent chunks
   uploadFn = async (payload) => {
     report.chunks[payload.speaker]++;
-    try {
-      const r = await live.uploadAudio(payload);
-      report.uploads++;
-      return r;
-    } catch (e) {
-      report.uploadErrors.push(String(e.message || e).slice(0, 160));
-      throw e;
-    }
+    const r = await live.uploadAudio(payload);
+    if (r.ok === false) report.uploadErrors.push(String(r.error).slice(0, 160));
+    else report.uploads++;
+    return r;
   };
   $("client-name").value = "בדיקה עצמית";
   await startSession();
@@ -413,7 +642,7 @@ async function runSelfTest() {
   report.loopback = !!(sess && sess.recorders.length === 2);
   report.startError = $("idle-error").classList.contains("hidden") ? null : $("idle-error").textContent;
   if (!sess) return live.selfTestDone(report);
-  await new Promise((r) => setTimeout(r, 20000));
+  await sleep(25000);
   await endSession();
   report.endedMessage = $("ended-msg").textContent;
   live.selfTestDone(report);

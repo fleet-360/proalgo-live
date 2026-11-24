@@ -13,6 +13,10 @@
   box-sizing: border-box;
 }
 
+html {
+  scroll-snap-type: y proximity;
+}
+
 html,
 body {
   margin: 0;
@@ -94,7 +98,11 @@ body {
 
 .frame {
   position: relative;
-  width: 100%;
+  /* a whole slide always fits under the top bar, also on a 1366x768 laptop and in a shared Zoom window */
+  width: min(100%, calc((100svh - 96px) * 16 / 9));
+  margin-inline: auto;
+  scroll-margin-top: 72px;
+  scroll-snap-align: start;
   aspect-ratio: 16 / 9;
   overflow: hidden;
   border-radius: 14px;
@@ -151,6 +159,7 @@ body {
 .box {
   position: absolute;
   overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 .lines {
@@ -190,6 +199,21 @@ body {
   100% { background: rgba(255, 222, 89, 0); }
 }
 
+/* white text on dark circles and pills: glow instead of a yellow fill */
+.on-dark.flash {
+  animation-name: flash-dark;
+}
+
+@keyframes flash-dark {
+  0% { background: rgba(255, 255, 255, 0.18); box-shadow: 0 0 0 3px rgba(255, 222, 89, 0.9); }
+  100% { background: transparent; box-shadow: 0 0 0 3px rgba(255, 222, 89, 0); }
+}
+
+.card-title .skel {
+  margin-left: auto;
+  margin-right: auto;
+}
+
 /* skeleton placeholder while the conversation hasn't covered a field yet */
 .skel {
   display: block;
@@ -217,6 +241,63 @@ body {
   .skel, .flash, .chip .dot, .toast { animation: none; }
 }
 
+/* ---------- phone: readable text instead of tiny slides ---------- */
+
+.plan-text {
+  display: none;
+  direction: rtl;
+  padding: 8px 16px 48px;
+  font-size: 16px;
+  line-height: 1.55;
+}
+
+.plan-text h2 {
+  margin: 22px 0 6px;
+  font-size: 19px;
+  color: #20caff;
+}
+
+.plan-text h3 {
+  margin: 14px 0 4px;
+  font-size: 16px;
+}
+
+.plan-text .num {
+  color: #20caff;
+  font-weight: 800;
+}
+
+.plan-text p {
+  margin: 4px 0;
+}
+
+.plan-text ul {
+  margin: 4px 0;
+  padding-inline-start: 20px;
+}
+
+.plan-text .strong {
+  font-weight: 700;
+}
+
+.plan-text .muted {
+  color: var(--ink-2);
+  text-align: center;
+  margin-top: 40px;
+}
+
+.plan-text .stage {
+  padding: 4px 12px 10px;
+  margin: 8px 0;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+@media (max-width: 700px) {
+  .deck { display: none; }
+  .plan-text { display: block; }
+}
+
 /* ---------- print / save as PDF: one slide per page ---------- */
 
 @page {
@@ -225,12 +306,20 @@ body {
 }
 
 @media print {
+  *, *::before, *::after {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  html { scroll-snap-type: none; }
   html, body { background: #fff; }
-  .topbar, .toast { display: none; }
+  .flash { animation: none !important; background: transparent !important; box-shadow: none !important; }
+  .topbar, .toast, .plan-text { display: none !important; }
+  .deck { display: flex !important; }
   .deck { padding: 0; gap: 0; max-width: none; }
   .frame {
     width: 1920px !important;
     height: 1080px;
+    margin: 0;
     border-radius: 0;
     box-shadow: none;
     break-after: page;

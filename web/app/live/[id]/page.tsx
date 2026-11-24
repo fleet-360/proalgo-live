@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { LiveView } from "@/components/LiveView";
+import { effectiveStatus } from "@/lib/schema";
 import { store } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
@@ -21,7 +22,7 @@ export default async function LivePage({ params }: { params: Promise<{ id: strin
     <LiveView
       id={id}
       initial={{
-        status: meta.status,
+        status: effectiveStatus(meta),
         clientName: meta.clientName,
         plan: meta.plan,
         version: meta.version,

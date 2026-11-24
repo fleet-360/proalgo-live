@@ -22,6 +22,7 @@
       "preload.js",
       "micmonitor.js",
       "config.defaults.json",
+      "config.build.json",
       "renderer/**",
       "assets/**"
     ],
