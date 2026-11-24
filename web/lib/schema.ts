@@ -48,6 +48,17 @@ export const AnalysisSchema = z.object({
   insights: InsightsSchema,
 });
 
+/** Second-pass output when the first pass left the stages empty: everything after slide 2. */
+export const CompletionSchema = z.object({
+  parts: PlanSchema.shape.parts,
+  stages: PlanSchema.shape.stages,
+  requirements: PlanSchema.shape.requirements,
+  scopeSubtitle: PlanSchema.shape.scopeSubtitle,
+  checkpoint: PlanSchema.shape.checkpoint,
+  questions: InsightsSchema.shape.questions,
+  roi: InsightsSchema.shape.roi,
+});
+
 export type Stage = z.infer<typeof StageSchema>;
 export type Plan = z.infer<typeof PlanSchema>;
 export type Insights = z.infer<typeof InsightsSchema>;

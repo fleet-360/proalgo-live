@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import {
   AnalysisSchema,
+  CompletionSchema,
   hasBusinessContent,
   normalizePlan,
   sanitizePlan,
@@ -41,11 +42,11 @@ const SYSTEM = `אתה יועץ פיתוח בכיר בחברת Pro Algorithm, ש
 - תוויות הדוברים בתמלול אוטומטיות ועלולות להתבלבל. אם אותו תוכן מופיע פעמיים בהפרש קצר, זה הלקוח שנקלט גם במיקרופון. קבע מי אמר מה לפי התוכן.
 - אל תציע ב-questions שאלה שכבר נענתה בשיחה.
 - הערות של איש המכירות גוברות על כל השאר: אם הוא כתב שמשהו לא נכון או שצריך להתמקד במשהו, תקן בהתאם.
-- ברגע שהלקוח תיאר בעיה או תהליך עסקי כלשהו, כל גרסה ממלאת את כל המצגת: 5 שלבים מלאים, שמות 3 החלקים, "מה נדרש מכם", שורת ההיקף ונקודת הבקרה. אסור להשאיר שדה או מערך ריק.
-- כל עוד נאמרה רק שיחת חולין והיכרות, בלי שום בעיה או תהליך עסקי, החזר את כל שדות התוכנית ריקים (מחרוזות ריקות ומערכים ריקים). הלקוח יראה "התוכנית נבנית", וזה עדיף על תוכנית כללית שלא קשורה אליו. ב-insights שים שאלה אחת שתפתח את השיחה העסקית.
-- בתחילת השיחה, כשעוד אין מספיק מידע, כתוב השערה סבירה שמבוססת על מה שכן נאמר. אל תמציא פרטים שלא נאמרו; עדיף ניסוח כללי.
+- התוכנית תמיד מלאה: 5 שלבים מלאים, שמות 3 החלקים, "מה נדרש מכם", שורת ההיקף ונקודת הבקרה. כשחסר מידע, השלם השערה מקצועית סבירה לפי סוג העסק והבעיה; זה בדיוק מה שאיש המכירות רוצה להראות ללקוח כדי לדייק איתו.
+- רק אם בתמלול אין עדיין אף משפט על העסק של הלקוח, על התהליך שלו או על בעיה (רק ברכות ושיחת חולין), החזר את שדות התוכנית ריקים. ברגע שנאמר משפט אחד על העסק, בנה תוכנית מלאה כהשערה.
+- בתחילת השיחה, כשעוד אין מספיק מידע, כתוב השערה סבירה שמבוססת על מה שכן נאמר. אל תמציא עובדות ספציפיות (שמות מערכות, מספרים) שלא נאמרו; עדיף ניסוח כללי.
 - העדיפות הראשונה היא תוכנית עבודה טובה וזורמת. אל תעמיס על איש המכירות: הוא באמצע שיחה ומציץ בפאנל לשנייה.
-- insights קצר וממוקד: עד 3 שאלות עסקיות שישפרו את התוכנית באמת (היקפים, כסף, זמן, מה הכי כואב), נקודה אחת או שתיים ב-roi, ובכל היותר 2 סיכונים עסקיים אמיתיים. אם אין מה להוסיף, השאר ריק.
+- insights קצר וממוקד: עד 3 שאלות עסקיות שישפרו את התוכנית באמת (היקפים, כסף, זמן, מה הכי כואב), נקודה אחת או שתיים ב-roi, ובכל היותר 2 סיכונים עסקיים אמיתיים.
 - התמלול אוטומטי ויכול להכיל טעויות שמיעה. תקן אותן בשקט לפי ההקשר. לעולם אל תזכיר טעויות תמלול, לא בתוכנית ולא ב-insights, ואל תשאל עליהן.
 - "insights" מיועד רק לאיש המכירות ולא מוצג ללקוח: כתוב שם בכנות מה ה-ROI, מה חסר ומה מסוכן.
 
@@ -139,7 +140,7 @@ export async function analyze(input: {
     notes ? `<salesperson_notes>\n${notes}\n</salesperson_notes>` : "",
     input.final
       ? "השיחה הסתיימה. כתוב את הגרסה הסופית והמלאה של התוכנית, כבסיס לאפיון."
-      : "עדכן את התוכנית לפי מה שנאמר עד עכשיו. אם הלקוח כבר תיאר תהליך או בעיה עסקית, מלא את כל השדות כולל 5 השלבים; אם עדיין רק היכרות, השאר את התוכנית ריקה.",
+      : "עדכן את התוכנית לפי מה שנאמר עד עכשיו.",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -163,7 +164,7 @@ export async function analyze(input: {
     );
     const u = response.usage;
     console.log(
-      `analyze: in=${u.input_tokens} cache_read=${u.cache_read_input_tokens ?? 0} cache_write=${u.cache_creation_input_tokens ?? 0} out=${u.output_tokens}`,
+      `analyze: model=${response.model} stop=${response.stop_reason} in=${u.input_tokens} cache_read=${u.cache_read_input_tokens ?? 0} cache_write=${u.cache_creation_input_tokens ?? 0} out=${u.output_tokens}`,
     );
     if (response.stop_reason === "refusal") {
       throw new Error(`Claude declined (${response.stop_details?.category ?? "unknown"})`);
@@ -196,17 +197,57 @@ export async function analyze(input: {
     result = await call(tail);
   }
 
-  // Once the business problem is on the page, the stages must be too: a half-empty deck looks broken to the client.
-  if (hasBusinessContent(result.plan) && !stagesComplete(result.plan) && remaining() > 130_000) {
-    console.warn("analyze: stages incomplete, retrying once");
+  // Early in a call the model sometimes writes the first page and leaves the rest of the deck empty.
+  // A half-empty deck looks broken to the client, so a focused second call builds just the missing part.
+  if (hasBusinessContent(result.plan) && !stagesComplete(result.plan) && remaining() > 90_000) {
+    console.warn("analyze: stages incomplete, completing them");
     try {
-      const retry = await call(
-        tail +
-          "\n\nחשוב: הלקוח כבר תיאר בעיה עסקית, ולכן חובה למלא עכשיו את כל 5 השלבים, שמות 3 החלקים, מה נדרש, שורת ההיקף ונקודת הבקרה. כתוב השערה סבירה לפי מה שנאמר.",
+      const timeout = Math.min(120_000, remaining() - 5_000);
+      const response = await client.beta.messages.parse(
+        {
+          model: MODEL,
+          max_tokens: 8000,
+          betas: ["server-side-fallback-2026-07-01"],
+          fallbacks: "default",
+          output_config: { effort: EFFORT, format: betaZodOutputFormat(CompletionSchema) },
+          system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
+          messages: [
+            {
+              role: "user",
+              content: [
+                ...transcriptBlocks,
+                {
+                  type: "text",
+                  text: [
+                    "</transcript>",
+                    `<plan_so_far>\n${JSON.stringify({ currentProcess: result.plan.currentProcess, solution: result.plan.solution })}\n</plan_so_far>`,
+                    "העמוד הראשון של המצגת כבר כתוב (plan_so_far). המשימה שלך עכשיו: לבנות את שאר המצגת שמממשת את הפתרון הזה – 5 שלבי עבודה מלאים (שלב 1 תשתית וחיבור, שלבים 2-4 הליבה מהערך הגבוה לנמוך, שלב 5 בדיקות הטמעה והדרכה), שמות 3 החלקים, מה נדרש מהלקוח, שורת היקף ונקודת בקרה. כשחסר מידע, כתוב השערה מקצועית סבירה. בנוסף: 2-3 שאלות שכדאי לאיש המכירות לשאול עכשיו ונקודת ROI אחת.",
+                  ].join("\n\n"),
+                },
+              ],
+            },
+          ],
+        },
+        { timeout },
       );
-      if (stagesComplete(retry.plan)) result = retry;
-    } catch {
-      // keep the first result
+      console.log(`analyze: completion out=${response.usage.output_tokens} stop=${response.stop_reason}`);
+      const c = response.parsed_output;
+      if (c) {
+        const merged = normalizePlan({ ...result.plan, ...c, stages: c.stages, parts: c.parts });
+        const { plan } = sanitizePlan(merged, input.previous);
+        if (stagesComplete(plan)) {
+          result = {
+            plan,
+            insights: {
+              ...result.insights,
+              questions: result.insights.questions.length ? result.insights.questions : c.questions.slice(0, 3),
+              roi: result.insights.roi.length ? result.insights.roi : c.roi.slice(0, 2),
+            },
+          };
+        }
+      }
+    } catch (e) {
+      console.warn("analyze: completion failed:", e instanceof Error ? e.message : e);
     }
   }
   // Last resort: carry over stages from the previous version rather than blanking them in front of the client.
