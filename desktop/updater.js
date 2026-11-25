@@ -34,12 +34,19 @@ function consumeUpdateFlag(app) {
   let flag = null;
   try {
     flag = JSON.parse(fs.readFileSync(flagPath(app), "utf8"));
-    fs.rmSync(flagPath(app), { force: true });
   } catch {
     flag = null;
   }
+  let removeError = "";
+  if (flag) {
+    try {
+      fs.rmSync(flagPath(app), { force: true });
+    } catch (e) {
+      removeError = ` (flag not removed: ${e && e.code})`; // stale flags expire on their own
+    }
+  }
   const fresh = flag && Date.now() - (flag.at || 0) < 15 * 60 * 1000 ? flag : null;
-  log(app, `start args=${JSON.stringify(process.argv.slice(1))} afterUpdate=${!!fresh}`);
+  log(app, `start args=${JSON.stringify(process.argv.slice(1))} afterUpdate=${!!fresh}${removeError}`);
   return fresh;
 }
 
