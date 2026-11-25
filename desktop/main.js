@@ -250,11 +250,13 @@ function notify(title, body, onClick) {
 
 // ---------- mic detection ----------
 
+let stopMicMonitor = null;
+
 function setupMicMonitor() {
   // Our own app also uses the mic while recording; ignore it.
   const ownExe = process.execPath.replace(/\\/g, "#");
   let endedTimer = null;
-  startMicMonitor({
+  stopMicMonitor = startMicMonitor({
     ignore: [ownExe, "electron.exe", "Pro Algorithm Live"],
     onStart: (apps) => {
       clearTimeout(endedTimer);
@@ -355,6 +357,7 @@ if (!app.requestSingleInstanceLock()) {
   });
   app.on("before-quit", () => {
     quitting = true;
+    if (stopMicMonitor) stopMicMonitor();
   });
   app.on("window-all-closed", (e) => e.preventDefault()); // keep running in the tray
 }

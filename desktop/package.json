@@ -1,7 +1,7 @@
 {
   "name": "proalgo-live",
   "productName": "Pro Algorithm Live",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Listens to sales calls and builds the work plan live",
   "author": "Pro Algorithm",
   "main": "main.js",
@@ -21,6 +21,7 @@
       "main.js",
       "preload.js",
       "micmonitor.js",
+      "micwatch.ps1",
       "config.defaults.json",
       "config.build.json",
       "renderer/**",
