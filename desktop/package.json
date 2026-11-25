@@ -1,7 +1,7 @@
 {
   "name": "proalgo-live",
   "productName": "Pro Algorithm Live",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "description": "Listens to sales calls and builds the work plan live",
   "author": "Pro Algorithm",
   "main": "main.js",
