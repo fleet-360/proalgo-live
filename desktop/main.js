@@ -16,7 +16,7 @@ const {
 const fs = require("node:fs");
 const path = require("node:path");
 const { startMicMonitor } = require("./micmonitor");
-const { setupAutoUpdate, consumeUpdateFlag } = require("./updater");
+const { setupAutoUpdate, consumeUpdateFlag, log: updateLog } = require("./updater");
 
 const APP_ID = "com.proalgorithm.live";
 let startHidden = process.argv.includes("--hidden");
@@ -403,7 +403,11 @@ function setupIpc() {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on("second-instance", showWindow);
+  app.on("second-instance", (_e, argv) => {
+    updateLog(app, `second instance ${JSON.stringify(argv.slice(1))}`);
+    if (argv.includes("--updated") || argv.includes("--hidden")) return; // relaunched by an update or by Windows at login
+    showWindow();
+  });
   app.setAppUserModelId(APP_ID);
   app.whenReady().then(() => {
     seedBuildToken();

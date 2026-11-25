@@ -9,19 +9,38 @@ const CHECK_EVERY_MS = 3 * 60 * 60 * 1000;
 const FIRST_CHECK_MS = 60 * 1000;
 const QUIET_MS = 10 * 60 * 1000; // no call activity for this long before restarting into the update
 
+/** A small log next to the config, for checking what the updater did on someone's computer. */
+function log(app, msg) {
+  try {
+    const file = path.join(app.getPath("userData"), "updater.log");
+    let old = "";
+    try {
+      old = fs.readFileSync(file, "utf8").split("\n").slice(-200).join("\n");
+    } catch {
+      old = "";
+    }
+    fs.writeFileSync(file, `${old}${new Date().toISOString()} v${app.getVersion()} ${msg}\n`);
+  } catch {
+    // logging must never break the app
+  }
+}
+
 function flagPath(app) {
   return path.join(app.getPath("userData"), "just-updated.json");
 }
 
 /** True (and clears the flag) when this run is the restart right after an automatic update. */
 function consumeUpdateFlag(app) {
+  let flag = null;
   try {
-    const flag = JSON.parse(fs.readFileSync(flagPath(app), "utf8"));
+    flag = JSON.parse(fs.readFileSync(flagPath(app), "utf8"));
     fs.rmSync(flagPath(app), { force: true });
-    return Date.now() - (flag.at || 0) < 15 * 60 * 1000 ? flag : null;
   } catch {
-    return null;
+    flag = null;
   }
+  const fresh = flag && Date.now() - (flag.at || 0) < 15 * 60 * 1000 ? flag : null;
+  log(app, `start args=${JSON.stringify(process.argv.slice(1))} afterUpdate=${!!fresh}`);
+  return fresh;
 }
 
 /**
@@ -45,6 +64,7 @@ function setupAutoUpdate({ app, state, beforeInstall }) {
     if (s.recording || s.busy || s.windowInUse) return;
     if (Date.now() - s.lastActivity < QUIET_MS) return;
     installing = true;
+    log(app, `installing ${readyVersion}`);
     try {
       fs.writeFileSync(flagPath(app), JSON.stringify({ version: readyVersion, at: Date.now() }));
     } catch {
@@ -56,9 +76,11 @@ function setupAutoUpdate({ app, state, beforeInstall }) {
 
   autoUpdater.on("update-downloaded", (info) => {
     readyVersion = info.version;
+    log(app, `downloaded ${info.version}`);
     tryInstall();
   });
-  autoUpdater.on("error", (e) => console.warn("auto-update:", e && e.message));
+  autoUpdater.on("error", (e) => log(app, `error ${e && e.message}`));
+  autoUpdater.on("update-available", (info) => log(app, `available ${info.version}`));
 
   const check = () => autoUpdater.checkForUpdates().catch((e) => console.warn("auto-update check:", e && e.message));
   setTimeout(check, FIRST_CHECK_MS);
@@ -66,4 +88,4 @@ function setupAutoUpdate({ app, state, beforeInstall }) {
   setInterval(tryInstall, 60 * 1000);
 }
 
-module.exports = { setupAutoUpdate, consumeUpdateFlag };
+module.exports = { setupAutoUpdate, consumeUpdateFlag, log };
