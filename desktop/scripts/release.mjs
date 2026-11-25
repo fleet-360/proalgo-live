@@ -26,9 +26,16 @@ if (!token) throw new Error("gh is not signed in (run: gh auth login)");
 
 const run = (cmd, env = {}) => execSync(cmd, { cwd: root, stdio: "inherit", env: { ...process.env, ...env } });
 
+const dirty = execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim();
+if (dirty) throw new Error(`Commit your changes first, the release is built from what is committed:\n${dirty}`);
+
 pkg.version = next;
 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
 console.log(`Releasing ${next}…`);
+// GitHub only publishes a release for a tag that already exists.
+run(`git commit -q -m "Release desktop ${next}" -- package.json`);
+run(`git tag v${next}`);
+run(`git push -q origin HEAD v${next}`);
 
 if (fs.existsSync(secret)) fs.renameSync(secret, parked);
 try {
