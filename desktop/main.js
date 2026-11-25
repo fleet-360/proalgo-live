@@ -16,9 +16,10 @@ const {
 const fs = require("node:fs");
 const path = require("node:path");
 const { startMicMonitor } = require("./micmonitor");
+const { setupAutoUpdate, consumeUpdateFlag } = require("./updater");
 
 const APP_ID = "com.proalgorithm.live";
-const startHidden = process.argv.includes("--hidden");
+let startHidden = process.argv.includes("--hidden");
 // --selftest: records 20s, uploads, ends the session and quits (for checking capture).
 const selfTest = process.argv.includes("--selftest");
 
@@ -29,10 +30,13 @@ let recording = false;
 let busy = false; // finishing a call: uploads draining and the final version being built
 let quitRequested = false;
 let sleepBlocker = null;
+let lastActivity = 0; // last call start/end, for choosing a quiet moment to update
 
 // ---------- config ----------
 
-// config.build.json (not in git) carries the production server URL and token baked into the installer.
+// config.build.json (not in git) can carry the access code for an installer that is handed out privately.
+// Public release installers (and the automatic updates) are built without it, so the code is copied into
+// the user's own config on first run and survives every update after that.
 function readJson(file) {
   try {
     return JSON.parse(fs.readFileSync(path.join(__dirname, file), "utf8"));
@@ -40,8 +44,23 @@ function readJson(file) {
     return {};
   }
 }
-const defaults = { ...readJson("config.defaults.json"), ...readJson("config.build.json") };
+const { appToken: buildToken, ...buildRest } = readJson("config.build.json");
+const defaults = { ...readJson("config.defaults.json"), ...buildRest };
 const configPath = () => path.join(app.getPath("userData"), "config.json");
+
+function seedBuildToken() {
+  if (!buildToken) return;
+  let overrides = {};
+  try {
+    overrides = JSON.parse(fs.readFileSync(configPath(), "utf8"));
+  } catch {
+    overrides = {};
+  }
+  if (overrides.appToken === buildToken) return;
+  overrides.appToken = buildToken;
+  fs.mkdirSync(path.dirname(configPath()), { recursive: true });
+  fs.writeFileSync(configPath(), JSON.stringify(overrides, null, 2));
+}
 
 function loadConfig() {
   try {
@@ -351,6 +370,7 @@ function setupIpc() {
   ipcMain.handle("clipboard:write", (_e, text) => clipboard.writeText(String(text)));
   ipcMain.handle("recording:set", (_e, value) => {
     recording = !!value;
+    lastActivity = Date.now();
     // Keep Windows from suspending the app in the middle of a long call.
     if (recording && sleepBlocker === null) sleepBlocker = powerSaveBlocker.start("prevent-app-suspension");
     if (!recording && sleepBlocker !== null) {
@@ -364,6 +384,7 @@ function setupIpc() {
   });
   ipcMain.handle("busy:set", (_e, value) => {
     busy = !!value;
+    lastActivity = Date.now();
   });
   ipcMain.handle("app:version", () => app.getVersion());
   ipcMain.handle("app:quit", () => {
@@ -385,12 +406,26 @@ if (!app.requestSingleInstanceLock()) {
   app.on("second-instance", showWindow);
   app.setAppUserModelId(APP_ID);
   app.whenReady().then(() => {
+    seedBuildToken();
+    const updated = consumeUpdateFlag(app);
+    if (updated) startHidden = true; // restarted by an automatic update: stay in the tray
     applyLoginItem(loadConfig());
     setupMediaHandlers();
     setupIpc();
     createWindow();
     createTray();
     setupMicMonitor();
+    if (updated) notify("Pro Algorithm Live עודכנה", `הותקנה גרסה ${updated.version}.`);
+    if (!selfTest) {
+      setupAutoUpdate({
+        app,
+        state: () => ({ recording, busy, lastActivity, windowInUse: !!win && win.isVisible() && win.isFocused() }),
+        beforeInstall: () => {
+          quitting = true;
+          if (stopMicMonitor) stopMicMonitor();
+        },
+      });
+    }
   });
   app.on("before-quit", () => {
     quitting = true;

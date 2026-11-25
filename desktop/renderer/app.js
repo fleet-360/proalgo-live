@@ -684,8 +684,10 @@ async function openSettings() {
   $("cfg-every").value = cfg.analyzeEverySeconds || 120;
   $("cfg-mic").checked = !!cfg.micAlerts;
   $("cfg-login").checked = !!cfg.openAtLogin;
-  $("version").textContent = `גרסה ${await live.version()}`;
+  $("version").textContent = `גרסה ${await live.version()} · מתעדכנת אוטומטית`;
+  $("token-needed").classList.toggle("hidden", !!cfg.appToken);
   show("settings");
+  if (!cfg.appToken) $("cfg-token").focus();
 }
 
 async function saveSettings() {
@@ -770,7 +772,7 @@ live.onEndAndQuit(async () => {
   cfg = await live.getConfig();
   if (new URLSearchParams(location.search).has("selftest")) return runSelfTest();
   renderHistory();
-  if (!cfg.serverUrl) openSettings();
+  if (!cfg.serverUrl || !cfg.appToken) openSettings();
 })();
 
 /** Records ~20s (uploading every chunk, even silence), ends the session, reports and quits. */

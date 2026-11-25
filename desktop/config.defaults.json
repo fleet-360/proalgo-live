@@ -1,5 +1,5 @@
 {
-  "serverUrl": "http://localhost:3000",
+  "serverUrl": "https://proalgo-live.vercel.app",
   "appToken": "",
   "chunkSeconds": 20,
   "analyzeEverySeconds": 120,

@@ -8,7 +8,8 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win nsis --x64"
+    "dist": "electron-builder --win nsis --x64 --publish never",
+    "release": "node scripts/release.mjs"
   },
   "build": {
     "appId": "com.proalgorithm.live",
@@ -22,6 +23,7 @@
       "preload.js",
       "micmonitor.js",
       "micwatch.ps1",
+      "updater.js",
       "config.defaults.json",
       "config.build.json",
       "renderer/**",
@@ -38,10 +40,19 @@
       "createStartMenuShortcut": true,
       "runAfterFinish": true,
       "shortcutName": "Pro Algorithm Live"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "fleet-360",
+      "repo": "proalgo-live",
+      "releaseType": "release"
     }
   },
   "devDependencies": {
     "electron": "^45.4.1",
     "electron-builder": "^26.18.0"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
   }
 }
