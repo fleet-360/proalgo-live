@@ -3,6 +3,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("live", {
   getConfig: () => ipcRenderer.invoke("config:get"),
   setConfig: (cfg) => ipcRenderer.invoke("config:set", cfg),
+  listHistory: () => ipcRenderer.invoke("history:list"),
+  saveHistory: (entry) => ipcRenderer.invoke("history:save", entry),
   api: (method, route, body) => ipcRenderer.invoke("api", { method, route, body }),
   uploadAudio: (payload) => ipcRenderer.invoke("audio:upload", payload),
   openExternal: (url) => ipcRenderer.invoke("open-external", url),

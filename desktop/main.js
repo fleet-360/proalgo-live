@@ -70,6 +70,41 @@ function saveConfig(cfg) {
   return merged;
 }
 
+// ---------- call history (this computer only) ----------
+
+const historyPath = () => path.join(app.getPath("userData"), "history.json");
+const HISTORY_MAX = 100;
+const HISTORY_DAYS = 120; // the server keeps a call about this long
+
+function loadHistory() {
+  try {
+    const list = JSON.parse(fs.readFileSync(historyPath(), "utf8"));
+    const cutoff = Date.now() - HISTORY_DAYS * 86400_000;
+    return Array.isArray(list) ? list.filter((h) => h && h.id && (h.startedAt || 0) > cutoff) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Adds a call or merges new details (name, end time) into one already listed. Newest first. */
+function saveHistory(entry) {
+  if (!entry || !entry.id) return loadHistory();
+  const list = loadHistory();
+  const i = list.findIndex((h) => h.id === entry.id);
+  const clean = Object.fromEntries(Object.entries(entry).filter(([, v]) => v !== undefined && v !== null && v !== ""));
+  if (i >= 0) list[i] = { ...list[i], ...clean };
+  else list.unshift(clean);
+  list.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+  const out = list.slice(0, HISTORY_MAX);
+  try {
+    fs.mkdirSync(path.dirname(historyPath()), { recursive: true });
+    fs.writeFileSync(historyPath(), JSON.stringify(out, null, 2));
+  } catch (e) {
+    console.warn("history save failed", e);
+  }
+  return out;
+}
+
 function applyLoginItem(cfg) {
   if (!app.isPackaged) return; // don't register the dev electron.exe
   app.setLoginItemSettings({ openAtLogin: !!cfg.openAtLogin, args: ["--hidden"] });
@@ -306,6 +341,8 @@ function setupMediaHandlers() {
 function setupIpc() {
   ipcMain.handle("config:get", () => loadConfig());
   ipcMain.handle("config:set", (_e, cfg) => saveConfig(cfg));
+  ipcMain.handle("history:list", () => loadHistory());
+  ipcMain.handle("history:save", (_e, entry) => saveHistory(entry));
   ipcMain.handle("api", (_e, { method, route, body }) => api(method, route, body));
   ipcMain.handle("audio:upload", (_e, payload) => uploadAudio(payload));
   ipcMain.handle("open-external", (_e, url) => {

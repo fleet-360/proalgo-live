@@ -29,6 +29,13 @@
         המערכת מקליטה את המיקרופון שלך ואת הסאונד של המחשב, כלומר את הלקוח ב-Zoom/Meet/Teams. עדיף לעבוד עם אוזניות. כדאי לעדכן את הלקוח שהשיחה מתומללת.
       </p>
       <div class="error hidden" id="idle-error"></div>
+
+      <div class="panel hidden" id="history-panel">
+        <div class="panel-title">שיחות אחרונות</div>
+        <input id="history-search" class="hidden" type="text" placeholder="חיפוש לפי שם לקוח…" autocomplete="off" />
+        <ul class="history" id="history-list"></ul>
+        <button class="link-btn hidden" id="btn-history-more">הצג את כל השיחות</button>
+      </div>
     </section>
 
     <!-- live call -->

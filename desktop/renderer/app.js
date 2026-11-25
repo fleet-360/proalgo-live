@@ -209,6 +209,7 @@ async function startSession() {
       finalizing: false,
     };
     sess = s;
+    live.saveHistory({ id: s.id, publicUrl: s.publicUrl, clientName: $("client-name").value.trim(), startedAt: start });
     addRecorder(s, mic, "sales");
     if (loop) addRecorder(s, loop, "client");
     mic = loop = null; // owned by the session now
@@ -379,6 +380,7 @@ async function runAnalyze(force) {
     const res = await live.api("POST", `/api/sessions/${s.id}/analyze`, { force: !!force });
     if (s !== sess) return;
     if (res.insights) renderInsights(res.insights);
+    rememberPlanName(s, res.plan);
     busy = res.status === 409;
     if (res.error) showError("live-error", `עדכון התוכנית נכשל: ${res.error}`);
     else if (!busy) showError("live-error", null);
@@ -449,6 +451,7 @@ async function finishCall(s) {
 
   // An update may still be running; the final pass needs the lock, so wait for it (up to 5 minutes).
   for (let i = 0; i < 300 && s.analyzing; i++) await sleep(1000);
+  live.saveHistory({ id: s.id, endedAt: Date.now() });
   await finalizeSession(s);
 
   s.finalizing = false;
@@ -498,6 +501,8 @@ async function finalizeSession(s) {
       return;
     }
     if (res.insights) renderInsights(res.insights);
+    rememberPlanName(s, res.plan);
+    live.saveHistory({ id: s.id, final: true });
     msg.textContent = "הגרסה הסופית מוכנה. זה הקישור לתוכנית, גם בשביל המתכנת.";
     return;
   }
@@ -562,6 +567,113 @@ function resetInsights() {
 }
 
 // ------------------------------------------------------------------
+// Recent calls (kept on this computer, so a lost link is one click away)
+// ------------------------------------------------------------------
+
+const HISTORY_SHOWN = 8;
+let historyAll = false;
+const historyChecked = new Set(); // calls whose name/status were refreshed from the server this run
+
+function rememberPlanName(s, plan) {
+  const name = plan && plan.clientName && String(plan.clientName).trim();
+  if (name && name !== s.planName) {
+    s.planName = name;
+    live.saveHistory({ id: s.id, planName: name });
+  }
+}
+
+const historyName = (h) => h.clientName || h.planName || "לקוח ללא שם";
+
+function historyMeta(h) {
+  const d = new Date(h.startedAt);
+  const day = d.toLocaleDateString("he-IL", { weekday: "short", day: "numeric", month: "numeric" });
+  const time = d.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
+  const parts = [`${day} · ${time}`];
+  if (h.endedAt && h.endedAt > h.startedAt) parts.push(`${Math.max(1, Math.round((h.endedAt - h.startedAt) / 60000))} דק'`);
+  return parts.join(" · ");
+}
+
+async function renderHistory() {
+  let list = [];
+  try {
+    list = await live.listHistory();
+  } catch {
+    list = [];
+  }
+  const panel = $("history-panel");
+  panel.classList.toggle("hidden", !list.length);
+  if (!list.length) return;
+
+  const search = $("history-search");
+  search.classList.toggle("hidden", list.length <= HISTORY_SHOWN);
+  const q = search.value.trim().toLowerCase();
+  const matches = q ? list.filter((h) => historyName(h).toLowerCase().includes(q)) : list;
+  const shown = historyAll || q ? matches : matches.slice(0, HISTORY_SHOWN);
+
+  const ul = $("history-list");
+  ul.innerHTML = "";
+  for (const h of shown) {
+    const li = document.createElement("li");
+    const text = document.createElement("div");
+    text.className = "h-text";
+    const name = document.createElement("div");
+    name.className = "h-name";
+    name.textContent = historyName(h);
+    name.title = h.publicUrl;
+    const meta = document.createElement("div");
+    meta.className = "h-meta";
+    meta.textContent = historyMeta(h);
+    text.append(name, meta);
+
+    const open = document.createElement("button");
+    open.textContent = "פתח";
+    open.addEventListener("click", () => live.openExternal(h.publicUrl));
+    const copy = document.createElement("button");
+    copy.textContent = "העתק קישור";
+    copy.addEventListener("click", async () => {
+      await live.copy(h.publicUrl);
+      copy.textContent = "הועתק ✓";
+      setTimeout(() => (copy.textContent = "העתק קישור"), 1500);
+    });
+    li.append(text, open, copy);
+    ul.append(li);
+  }
+  if (!shown.length) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "לא נמצאה שיחה בשם הזה";
+    ul.append(li);
+  }
+  $("btn-history-more").classList.toggle("hidden", historyAll || !!q || matches.length <= HISTORY_SHOWN);
+
+  refreshHistoryNames(list.slice(0, 20));
+}
+
+/** The client's name is often learned during the call; pick it up from the server for calls listed without one. */
+async function refreshHistoryNames(list) {
+  const todo = list.filter((h) => !historyChecked.has(h.id) && (!h.planName || !h.final));
+  if (!todo.length) return;
+  todo.forEach((h) => historyChecked.add(h.id));
+  let changed = false;
+  await Promise.all(
+    todo.map(async (h) => {
+      try {
+        const data = await live.api("GET", `/api/live/${h.id}`);
+        const planName = (data.plan && data.plan.clientName) || data.clientName || "";
+        const final = data.status === "ended" && !!data.plan;
+        if ((planName && planName !== h.planName) || (final && !h.final)) {
+          await live.saveHistory({ id: h.id, planName, final: final || undefined });
+          changed = true;
+        }
+      } catch {
+        // offline, or the call expired on the server; keep what we have
+      }
+    }),
+  );
+  if (changed && currentView === "idle") renderHistory();
+}
+
+// ------------------------------------------------------------------
 // Settings
 // ------------------------------------------------------------------
 
@@ -612,6 +724,12 @@ $("btn-new").addEventListener("click", () => {
   $("mic-banner").classList.add("hidden");
   showError("idle-error", null);
   show("idle");
+  renderHistory();
+});
+$("history-search").addEventListener("input", renderHistory);
+$("btn-history-more").addEventListener("click", () => {
+  historyAll = true;
+  renderHistory();
 });
 $("btn-settings").addEventListener("click", openSettings);
 $("btn-save").addEventListener("click", saveSettings);
@@ -625,6 +743,7 @@ live.onPromptStart(({ autoStart } = {}) => {
     $("client-name").value = "";
     showError("idle-error", null);
     show("idle");
+    renderHistory();
   }
   if (currentView !== "idle") return;
   if (autoStart) return startSession();
@@ -650,6 +769,7 @@ live.onEndAndQuit(async () => {
 (async () => {
   cfg = await live.getConfig();
   if (new URLSearchParams(location.search).has("selftest")) return runSelfTest();
+  renderHistory();
   if (!cfg.serverUrl) openSettings();
 })();
 

@@ -113,3 +113,12 @@ button.big { padding: 14px; font-size: 16px; }
 .transcript .seg { padding: 6px 10px; border-radius: 10px; background: var(--panel-2); }
 .transcript .seg.client { background: #26206b; }
 .transcript .who { font-weight: 700; color: var(--muted); margin-inline-end: 6px; }
+
+.history { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.history li { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px; background: var(--panel-2); }
+.history .h-text { flex: 1; min-width: 0; }
+.history .h-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history .h-meta { color: var(--muted); font-size: 12px; }
+.history button { padding: 6px 10px; font-size: 13px; }
+.history .empty { background: transparent; color: var(--muted); padding: 4px 0; }
+.link-btn { background: transparent; border: none; color: var(--muted); padding: 4px; font-weight: 400; text-decoration: underline; }
