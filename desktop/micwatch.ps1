@@ -15,6 +15,24 @@ namespace ProAlgo {
   [ComImport, Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
   interface IMMDeviceEnumerator {
     [PreserveSig] int EnumAudioEndpoints(int dataFlow, int stateMask, out IMMDeviceCollection devices);
+    [PreserveSig] int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice device);
+  }
+
+  [ComImport, Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IAudioEndpointVolume {
+    [PreserveSig] int RegisterControlChangeNotify(IntPtr a);
+    [PreserveSig] int UnregisterControlChangeNotify(IntPtr a);
+    [PreserveSig] int GetChannelCount(out uint c);
+    [PreserveSig] int SetMasterVolumeLevel(float l, IntPtr g);
+    [PreserveSig] int SetMasterVolumeLevelScalar(float l, IntPtr g);
+    [PreserveSig] int GetMasterVolumeLevel(out float l);
+    [PreserveSig] int GetMasterVolumeLevelScalar(out float l);
+    [PreserveSig] int SetChannelVolumeLevel(uint c, float l, IntPtr g);
+    [PreserveSig] int SetChannelVolumeLevelScalar(uint c, float l, IntPtr g);
+    [PreserveSig] int GetChannelVolumeLevel(uint c, out float l);
+    [PreserveSig] int GetChannelVolumeLevelScalar(uint c, out float l);
+    [PreserveSig] int SetMute(int m, IntPtr g);
+    [PreserveSig] int GetMute(out int m);
   }
 
   [ComImport, Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -85,6 +103,21 @@ namespace ProAlgo {
       }
       return string.Join(",", names);
     }
+
+    /// Volume (0-100) and mute of the default microphone for a role: 0 = console, 2 = communications.
+    /// Read-only: only reports what Windows shows, never changes it.
+    public static string MicLevel(int role) {
+      try {
+        var en = (IMMDeviceEnumerator)new MMDeviceEnumeratorCo();
+        IMMDevice dev; if (en.GetDefaultAudioEndpoint(1, role, out dev) != 0) return "-1|0";
+        Guid iid = typeof(IAudioEndpointVolume).GUID;
+        object o; if (dev.Activate(ref iid, 23, IntPtr.Zero, out o) != 0) return "-1|0";
+        var v = (IAudioEndpointVolume)o;
+        float l; v.GetMasterVolumeLevelScalar(out l);
+        int m; v.GetMute(out m);
+        return ((int)Math.Round(l * 100)) + "|" + (m != 0 ? 1 : 0);
+      } catch { return "-1|0"; }
+    }
   }
 }
 "@
@@ -92,6 +125,8 @@ namespace ProAlgo {
 while ($true) {
   try { $apps = [ProAlgo.MicWatch]::ActiveCaptureApps() } catch { $apps = "" }
   [Console]::Out.WriteLine("MIC|" + $apps)
+  # VOL|console volume|console muted|communications volume|communications muted
+  [Console]::Out.WriteLine("VOL|" + [ProAlgo.MicWatch]::MicLevel(0) + "|" + [ProAlgo.MicWatch]::MicLevel(2))
   [Console]::Out.Flush()
   Start-Sleep -Seconds 2
 }

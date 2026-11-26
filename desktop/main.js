@@ -19,6 +19,10 @@ const { startMicMonitor } = require("./micmonitor");
 const { setupAutoUpdate, consumeUpdateFlag, log: updateLog } = require("./updater");
 
 const APP_ID = "com.proalgorithm.live";
+
+// Never let Chromium's WebRTC adjust the Windows microphone level. Zoom/Teams run their own level
+// control, and two programs fighting over it can drive the salesperson's mic down to silence.
+app.commandLine.appendSwitch("disable-features", "WebRtcAllowInputVolumeAdjustment");
 let startHidden = process.argv.includes("--hidden");
 // --selftest: records 20s, uploads, ends the session and quits (for checking capture).
 const selfTest = process.argv.includes("--selftest");
@@ -302,9 +306,27 @@ function notify(title, body, onClick) {
   n.show();
 }
 
+// ---------- audio log (this computer only, for finding out what happened on a call) ----------
+
+function audioLog(msg) {
+  try {
+    const file = path.join(app.getPath("userData"), "audio.log");
+    let old = "";
+    try {
+      old = fs.readFileSync(file, "utf8").split("\n").slice(-1500).join("\n");
+    } catch {
+      old = "";
+    }
+    fs.writeFileSync(file, `${old}${new Date().toISOString()} ${msg}\n`);
+  } catch {
+    // logging must never break the app
+  }
+}
+
 // ---------- mic detection ----------
 
 let stopMicMonitor = null;
+let micLevel = null; // latest Windows volume/mute of the default microphones
 
 function setupMicMonitor() {
   // Our own app also uses the mic while recording; ignore it.
@@ -312,6 +334,21 @@ function setupMicMonitor() {
   let endedTimer = null;
   stopMicMonitor = startMicMonitor({
     ignore: [ownExe, "electron.exe", "Pro Algorithm Live"],
+    onApps: (apps) => audioLog(`mic in use by: ${apps.join(", ") || "nobody"}`),
+    onLevel: (level) => {
+      const prev = micLevel;
+      micLevel = level;
+      const fmt = (l) => (l.volume < 0 ? "n/a" : `${l.volume}%${l.muted ? " MUTED" : ""}`);
+      audioLog(`windows mic level: default=${fmt(level.console)} communications=${fmt(level.comms)}${recording ? " (recording)" : ""}`);
+      if (win) win.webContents.send("mic-level", level);
+      // During a call the window may be hidden: say it out loud once when the mic goes silent.
+      const silent = (l) => l && (l.muted || (l.volume >= 0 && l.volume < 10));
+      const nowSilent = silent(level.comms) || silent(level.console);
+      const wasSilent = prev && (silent(prev.comms) || silent(prev.console));
+      if (recording && nowSilent && !wasSilent) {
+        notify("המיקרופון שלך מושתק ב-Windows", "יכול להיות שהלקוח לא שומע אותך. לחץ כאן כדי לראות.", showWindow);
+      }
+    },
     onStart: (apps) => {
       clearTimeout(endedTimer);
       endedTimer = null;
@@ -371,6 +408,7 @@ function setupIpc() {
   ipcMain.handle("recording:set", (_e, value) => {
     recording = !!value;
     lastActivity = Date.now();
+    audioLog(recording ? "call recording started" : "call recording stopped");
     // Keep Windows from suspending the app in the middle of a long call.
     if (recording && sleepBlocker === null) sleepBlocker = powerSaveBlocker.start("prevent-app-suspension");
     if (!recording && sleepBlocker !== null) {
@@ -387,6 +425,9 @@ function setupIpc() {
     lastActivity = Date.now();
   });
   ipcMain.handle("app:version", () => app.getVersion());
+  ipcMain.handle("audio:log", (_e, msg) => audioLog(String(msg).slice(0, 500)));
+  ipcMain.handle("mic:level", () => micLevel);
+  ipcMain.handle("open-sound-settings", () => shell.openExternal("ms-settings:sound"));
   ipcMain.handle("app:quit", () => {
     quitting = true;
     app.quit();

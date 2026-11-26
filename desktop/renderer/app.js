@@ -66,7 +66,13 @@ class ChannelRecorder {
     src.connect(this.analyser);
     this.buf = new Float32Array(this.analyser.fftSize);
     // Headset unplugged, Bluetooth dropped, sleep/resume: the track ends and this channel must be replaced.
-    track.addEventListener("ended", () => this._die());
+    track.addEventListener("ended", () => {
+      live.audioLog(`${speaker} track ended (${track.label})`);
+      this._die();
+    });
+    // "mute" here means the device stopped delivering sound (not the call app's mute button).
+    track.addEventListener("mute", () => live.audioLog(`${speaker} track muted by the system (${track.label})`));
+    track.addEventListener("unmute", () => live.audioLog(`${speaker} track unmuted (${track.label})`));
   }
 
   start() {
@@ -137,10 +143,47 @@ let sess = null; // the current call (see startSession)
 let starting = false;
 
 async function captureMic() {
-  return navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  // autoGainControl stays off: the call app (Zoom/Teams/Meet) owns the mic level, we only listen.
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false },
   });
+  const track = stream.getAudioTracks()[0];
+  live.audioLog(`mic opened: ${track ? track.label : "no track"}`);
+  return stream;
 }
+
+// ----- the salesperson's mic: warn when Windows has it muted or turned all the way down -----
+
+function micSilentText(level) {
+  if (!level) return "";
+  for (const l of [level.comms, level.console]) {
+    if (!l || l.volume < 0) continue;
+    if (l.muted) return "המיקרופון שלך מושתק.";
+    if (l.volume < 10) return `עוצמת המיקרופון שלך ירדה ל-${l.volume}%.`;
+  }
+  return "";
+}
+
+function showMicLevel(level) {
+  const text = micSilentText(level);
+  const box = $("mic-muted");
+  if (!text || !sess || sess.ended) return box.classList.add("hidden");
+  $("mic-muted-text").innerHTML = "";
+  const b = document.createElement("b");
+  b.textContent = text;
+  $("mic-muted-text").append(b, " יכול להיות שהלקוח לא שומע אותך. צריך להעלות את העוצמה או לבטל את ההשתקה בהגדרות הקול.");
+  box.classList.remove("hidden");
+}
+
+navigator.mediaDevices.addEventListener("devicechange", async () => {
+  try {
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    const mics = devs.filter((d) => d.kind === "audioinput").map((d) => d.label || d.deviceId.slice(0, 8));
+    live.audioLog(`devices changed, microphones: ${mics.join(" | ")}`);
+  } catch {
+    // only for the log
+  }
+});
 
 /** Computer sound = the client (Zoom / Meet / Teams output). Returns null if it can't be captured. */
 async function captureLoopback() {
@@ -149,8 +192,10 @@ async function captureLoopback() {
     loop.getVideoTracks().forEach((t) => (t.enabled = false));
     if (!loop.getAudioTracks().length) {
       loop.getTracks().forEach((t) => t.stop());
+      live.audioLog("computer sound: no audio track");
       return null;
     }
+    live.audioLog("computer sound opened");
     return loop;
   } catch (e) {
     console.warn("loopback capture failed", e);
@@ -218,6 +263,7 @@ async function startSession() {
     showError("live-error", null);
     $("loopback-warn").classList.toggle("hidden", s.recorders.length === 2);
     $("device-warn").classList.add("hidden");
+    $("mic-muted").classList.add("hidden");
     $("call-ended-banner").classList.add("hidden");
     $("note-status").classList.add("hidden");
     $("timer").textContent = "00:00";
@@ -231,6 +277,7 @@ async function startSession() {
     await live.copy(s.publicUrl);
     show("live");
     setStatus("מקשיב לשיחה", true);
+    live.getMicLevel().then(showMicLevel).catch(() => {});
     s.ticker = setInterval(tick, 1000);
   } catch (e) {
     console.error(e);
@@ -435,6 +482,7 @@ async function finishCall(s) {
   clearInterval(s.ticker);
   $("btn-end").disabled = true;
   s.recorders.forEach((r) => r.stop());
+  $("mic-muted").classList.add("hidden");
   setStatus("מסיים…");
   $("ended-url").textContent = s.publicUrl;
   $("ended-msg").textContent = "מתמלל את הדקות האחרונות ומכין את הגרסה הסופית…";
@@ -752,6 +800,8 @@ live.onPromptStart(({ autoStart } = {}) => {
   $("mic-banner").classList.remove("hidden");
   $("client-name").focus();
 });
+live.onMicLevel(showMicLevel);
+$("btn-sound-settings").addEventListener("click", () => live.openSoundSettings());
 live.onMicActive(({ active }) => {
   if (currentView === "idle") $("mic-banner").classList.toggle("hidden", !active);
 });

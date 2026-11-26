@@ -89,6 +89,8 @@ button.big { padding: 14px; font-size: 16px; }
 .error { background: rgba(255, 90, 122, 0.12); border: 1px solid var(--danger); color: #ffc2cf; padding: 10px 12px; border-radius: 10px; white-space: pre-wrap; }
 .alert { background: rgba(255, 209, 102, 0.14); border: 1px solid var(--warn); color: #ffe3a3; padding: 10px 12px; border-radius: 10px; display: flex; flex-direction: column; gap: 8px; line-height: 1.45; }
 .alert b { color: var(--warn); }
+.alert.danger-alert { background: rgba(255, 90, 122, 0.14); border-color: var(--danger); color: #ffc2cf; }
+.alert.danger-alert b { color: var(--danger); }
 .queue { display: block; color: var(--warn); }
 .warn { background: rgba(255, 209, 102, 0.1); border: 1px solid var(--warn); color: var(--warn); padding: 8px 12px; border-radius: 10px; font-size: 13px; }
 

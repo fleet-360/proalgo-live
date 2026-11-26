@@ -18,4 +18,8 @@ contextBridge.exposeInMainWorld("live", {
   onCallMaybeEnded: (fn) => ipcRenderer.on("call-maybe-ended", (_e, data) => fn(data)),
   onEndAndQuit: (fn) => ipcRenderer.on("end-and-quit", () => fn()),
   quit: () => ipcRenderer.invoke("app:quit"),
+  audioLog: (msg) => ipcRenderer.invoke("audio:log", msg),
+  getMicLevel: () => ipcRenderer.invoke("mic:level"),
+  onMicLevel: (fn) => ipcRenderer.on("mic-level", (_e, data) => fn(data)),
+  openSoundSettings: () => ipcRenderer.invoke("open-sound-settings"),
 });

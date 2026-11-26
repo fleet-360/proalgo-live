@@ -36,8 +36,8 @@ function appNameFromKey(key) {
 }
 
 /** Runs micwatch.ps1 and keeps the latest list of apps with an active capture session. */
-function startSessionWatcher() {
-  const state = { apps: [], updatedAt: 0 };
+function startSessionWatcher(onLevel) {
+  const state = { apps: [], updatedAt: 0, level: "" };
   let child = null;
   let stopped = false;
   let restarts = 0;
@@ -64,6 +64,17 @@ function startSessionWatcher() {
       while ((i = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, i).trim();
         buf = buf.slice(i + 1);
+        if (line.startsWith("VOL|")) {
+          // VOL|console volume|console muted|communications volume|communications muted
+          const [cv, cm, mv, mm] = line.slice(4).split("|").map(Number);
+          const level = { console: { volume: cv, muted: cm === 1 }, comms: { volume: mv, muted: mm === 1 } };
+          const key = JSON.stringify(level);
+          if (key !== state.level) {
+            state.level = key;
+            onLevel?.(level);
+          }
+          continue;
+        }
         if (!line.startsWith("MIC|")) continue;
         state.apps = line.slice(4).split(",").map((s) => s.trim()).filter(Boolean);
         state.updatedAt = Date.now();
@@ -94,9 +105,10 @@ function startSessionWatcher() {
  * using the mic, and onStop() when no other app is using it any more.
  * `ignore` holds names or exe paths of our own app. Returns a stop function.
  */
-function startMicMonitor({ intervalMs = 3000, ignore = [], onStart, onStop }) {
+function startMicMonitor({ intervalMs = 3000, ignore = [], onStart, onStop, onLevel, onApps }) {
   const ignoreNames = ignore.map((s) => path.basename(s.replace(/#/g, "\\"), ".exe").toLowerCase());
-  const sessions = startSessionWatcher();
+  const sessions = startSessionWatcher(onLevel);
+  let lastApps = "";
   let wasActive = false;
   const tick = async () => {
     const fromRegistry = await queryRegistryMicApps();
@@ -109,6 +121,11 @@ function startMicMonitor({ intervalMs = 3000, ignore = [], onStart, onStop }) {
       if (!low || ignoreNames.includes(low) || seen.has(low)) continue;
       seen.add(low);
       others.push(name);
+    }
+    const appsKey = others.join(",");
+    if (appsKey !== lastApps) {
+      lastApps = appsKey;
+      onApps?.(others.map(prettyName));
     }
     const active = others.length > 0;
     if (active && !wasActive) onStart?.(others.map(prettyName));
